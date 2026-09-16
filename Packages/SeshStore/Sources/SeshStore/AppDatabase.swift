@@ -79,7 +79,7 @@ public final class AppDatabase: Sendable {
 
             try db.create(table: "setting") { t in
                 t.primaryKey("key", .text)
-                /// The value as JSON, exactly as the server stores it.
+                // The value as JSON, exactly as the server stores it.
                 t.column("value", .text).notNull().defaults(to: "null")
                 t.column("updatedAt", .integer).notNull().defaults(to: 0)
                 t.column("dirty", .boolean).notNull().defaults(to: false)
@@ -104,10 +104,10 @@ public final class AppDatabase: Sendable {
                 t.primaryKey("ref", .text)
                 t.column("provider", .text).notNull()
                 t.column("json", .text).notNull()
-                /// Ticked off here but not yet at the provider — hidden from the list,
-                /// and restored if the command is ultimately refused.
+                // Ticked off here but not yet at the provider — hidden from the list,
+                // and restored if the command is ultimately refused.
                 t.column("pendingComplete", .boolean).notNull().defaults(to: false)
-                /// Made here and not yet real anywhere else.
+                // Made here and not yet real anywhere else.
                 t.column("pendingCreate", .boolean).notNull().defaults(to: false)
             }
 
@@ -122,7 +122,7 @@ public final class AppDatabase: Sendable {
                 t.primaryKey("opId", .text)
                 t.column("kind", .text).notNull()
                 t.column("payload", .text).notNull()
-                /// Set for ops where only the newest matters — the timer mirror.
+                // Set for ops where only the newest matters — the timer mirror.
                 t.column("coalesceKey", .text)
                 t.column("createdAt", .integer).notNull()
                 t.column("attempts", .integer).notNull().defaults(to: 0)

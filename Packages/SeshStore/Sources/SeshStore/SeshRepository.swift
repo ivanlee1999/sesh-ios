@@ -187,18 +187,7 @@ public final class SeshRepository: Sendable {
             guard mirror else { return }
 
             let payload = state.mirrorPayload(now: stamp, deviceId: deviceId)
-            var json: [String: JSONValue] = [:]
-            for (key, value) in payload {
-                switch value {
-                case let v as String: json[key] = .string(v)
-                case let v as Int: json[key] = .number(Double(v))
-                case let v as Millis: json[key] = .number(Double(v))
-                case let v as Double: json[key] = .number(v)
-                case let v as Bool: json[key] = .bool(v)
-                default: json[key] = .null
-                }
-            }
-            try enqueue(db, op: SyncOp(kind: .timerMirror, payload: json), coalesceKey: "timer")
+            try enqueue(db, op: SyncOp(kind: .timerMirror, payload: payload), coalesceKey: "timer")
         }
     }
 
@@ -276,9 +265,28 @@ public final class SeshRepository: Sendable {
         }
     }
 
+    /// Refused when sessions still stand behind it — they are filed by its slug
+    /// and would lose their name and colour.
+    public struct CategoryInUse: Error {
+        public let sessionCount: Int
+    }
+
+    /**
+     Delete a category, or refuse to.
+
+     The count is checked inside the same transaction as the delete rather than
+     by the caller beforehand: a guard that lives at one call site is a guard
+     the next call site will forget, and the cost of forgetting here is a year
+     of sessions pointing at a slug that no longer exists.
+     */
     public func deleteCategory(id: String) throws {
         let stamp = now()
         try writer.write { db in
+            guard let existing = try CategoryRecord.fetchOne(db, key: id) else { return }
+
+            let count = try SessionRecord.live.filter(Column("category") == existing.name).fetchCount(db)
+            guard count == 0 else { throw CategoryInUse(sessionCount: count) }
+
             _ = try CategoryRecord.deleteOne(db, key: id)
             try enqueue(db, op: SyncOp(kind: .categoryDelete, payload: [
                 "id": .string(id),

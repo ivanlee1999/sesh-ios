@@ -55,13 +55,28 @@ public final class DatabaseSyncStore: SyncStore, @unchecked Sendable {
     // ── The outbox ──────────────────────────────────────────────────────
 
     public func dueOps(now: Millis, limit: Int) throws -> [OutboxRecord] {
-        try writer.read { db in
+        try writer.write { db in
             let rows = try OutboxRecordRow
                 .filter(Column("nextAttemptAt") <= now)
                 .order(Column("createdAt"))
                 .limit(limit)
                 .fetchAll(db)
-            return rows.compactMap { Self.decode($0) }
+
+            var ready: [OutboxRecord] = []
+            for row in rows {
+                if let decoded = Self.decode(row) {
+                    ready.append(decoded)
+                } else {
+                    /*
+                     A payload that will not decode can never be sent. Skipping
+                     it quietly left it in the table for good: never sent, never
+                     removed, and still counted on the Settings screen as
+                     something waiting to sync, with no way to clear it.
+                     */
+                    try OutboxRecordRow.deleteOne(db, key: row.opId)
+                }
+            }
+            return ready
         }
     }
 
@@ -125,10 +140,7 @@ public final class DatabaseSyncStore: SyncStore, @unchecked Sendable {
                      from its own category and shows up grey and nameless.
                      */
                     if let previous = local, previous.name != remote.name {
-                        try db.execute(
-                            sql: "UPDATE session SET category = ? WHERE category = ?",
-                            arguments: [remote.name, previous.name]
-                        )
+                        try Self.repointCategory(db, from: previous.name, to: remote.name)
                     }
                     try CategoryRecord(remote: remote).save(db)
                 }
@@ -146,33 +158,43 @@ public final class DatabaseSyncStore: SyncStore, @unchecked Sendable {
     public func remapCategory(from oldSlug: String, to newSlug: String) throws {
         guard oldSlug != newSlug else { return }
         try writer.write { db in
-            try db.execute(sql: "UPDATE session SET category = ? WHERE category = ?", arguments: [newSlug, oldSlug])
+            try Self.repointCategory(db, from: oldSlug, to: newSlug)
+        }
+    }
 
-            /*
-             The queue has to move too. An op still carrying the old slug would
-             be refused for exactly the reason this one was, and the next sync
-             would spend its whole run learning the same thing again.
-             */
-            let pending = try OutboxRecordRow.fetchAll(db)
-            for row in pending {
-                guard let data = row.payload.data(using: .utf8),
-                      var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      var payload = object["payload"] as? [String: Any]
-                else { continue }
+    /**
+     Point everything that named the old slug at the new one.
 
-                let key = (row.kind == SyncOpKind.categoryUpsert.rawValue || row.kind == SyncOpKind.categoryDelete.rawValue)
-                    ? "name" : "category"
-                guard payload[key] as? String == oldSlug else { continue }
+     Takes an open `db` rather than opening its own, because it is called from
+     inside `apply` — which is already in a transaction, and nesting a second
+     write inside it would deadlock.
 
-                payload[key] = newSlug
-                object["payload"] = payload
-                if let updated = try? JSONSerialization.data(withJSONObject: object),
-                   let text = String(data: updated, encoding: .utf8) {
-                    try db.execute(
-                        sql: "UPDATE outboxItem SET payload = ? WHERE opId = ?",
-                        arguments: [text, row.opId]
-                    )
-                }
+     The queue is rewritten as well as the rows. An op still carrying the old
+     slug would be refused by the server for exactly the reason this rename
+     arrived, and the next sync would spend its run learning the same thing
+     again.
+     */
+    static func repointCategory(_ db: Database, from oldSlug: String, to newSlug: String) throws {
+        guard oldSlug != newSlug else { return }
+        try db.execute(sql: "UPDATE session SET category = ? WHERE category = ?", arguments: [newSlug, oldSlug])
+
+        for row in try OutboxRecordRow.fetchAll(db) {
+            guard let data = row.payload.data(using: .utf8),
+                  var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  var payload = object["payload"] as? [String: Any]
+            else { continue }
+
+            // A data op stores its SyncOpKind as the row kind; a category op
+            // names its slug under "name", everything else under "category".
+            let key = (row.kind == SyncOpKind.categoryUpsert.rawValue || row.kind == SyncOpKind.categoryDelete.rawValue)
+                ? "name" : "category"
+            guard payload[key] as? String == oldSlug else { continue }
+
+            payload[key] = newSlug
+            object["payload"] = payload
+            if let updated = try? JSONSerialization.data(withJSONObject: object),
+               let text = String(data: updated, encoding: .utf8) {
+                try db.execute(sql: "UPDATE outboxItem SET payload = ? WHERE opId = ?", arguments: [text, row.opId])
             }
         }
     }
@@ -204,9 +226,16 @@ public final class DatabaseSyncStore: SyncStore, @unchecked Sendable {
     }
 }
 
-/// Which of the two queues an outbox row belongs to.
+/**
+ What an outbox row's `kind` column holds.
+
+ A task command stores `task`. A data op stores its own `SyncOpKind` — the
+ literal `"session.complete"`, `"category.upsert"` and so on — rather than
+ `data`, so the queue can be read without decoding every payload. `data` is
+ therefore the name of the category, never a stored value.
+ */
 public enum OutboxKind: String, Sendable {
-    /// Replicated state, sent in a batch through `/api/sync`.
+    /// Replicated state, sent in a batch through `/api/sync`. Never stored as-is.
     case data
     /// A command to Todoist or Things, sent one at a time to its own endpoint.
     case task

@@ -183,20 +183,28 @@ public struct TimerState: Equatable, Sendable, Codable {
      every web client reconstructs the countdown as `remaining - (now - updatedAt)`.
      Converting only at the boundary keeps this app's wall-clock model to itself
      while still showing up correctly on a laptop across the room.
+
+     Typed as `JSONValue` rather than `Any`. A dictionary of `Any` pushed the
+     problem one layer out, where the caller had to rediscover each value's type
+     with dynamic casts — and anything it failed to recognise would quietly
+     become null, corrupting the mirror rather than failing to build.
      */
-    public func mirrorPayload(now: Millis, deviceId: String) -> [String: Any] {
-        [
-            "phase": phase == .reflect ? "idle" : phase.rawValue,
-            "sessionType": kind.rawValue,
-            "intention": intention,
-            "category": category,
-            "targetMs": targetMs,
-            "remainingMs": remainingMs(now: now),
-            "overflowMs": max(0, -remainingMs(now: now)),
-            "startedAt": startedAt as Any,
-            "pausedAt": pausedAt as Any,
-            "todoistTaskId": taskRefs as Any,
-            "deviceId": deviceId,
+    public func mirrorPayload(now: Millis, deviceId: String) -> [String: JSONValue] {
+        let remaining = remainingMs(now: now)
+        return [
+            // The poster is this app's own state; to every other device the
+            // timer has simply stopped.
+            "phase": .string(phase == .reflect ? "idle" : phase.rawValue),
+            "sessionType": .string(kind.rawValue),
+            "intention": .string(intention),
+            "category": .string(category),
+            "targetMs": .number(Double(targetMs)),
+            "remainingMs": .number(Double(remaining)),
+            "overflowMs": .number(Double(max(0, -remaining))),
+            "startedAt": startedAt.map { .number(Double($0)) } ?? .null,
+            "pausedAt": pausedAt.map { .number(Double($0)) } ?? .null,
+            "todoistTaskId": taskRefs.map { .string($0) } ?? .null,
+            "deviceId": .string(deviceId),
         ]
     }
 }

@@ -133,11 +133,29 @@ final class TimerStateTests: XCTestCase {
         let timer = running()
         let payload = timer.mirrorPayload(now: t0 + 60_000, deviceId: "iphone")
 
-        XCTAssertEqual(payload["phase"] as? String, "running")
-        XCTAssertEqual(payload["sessionType"] as? String, "focus")
-        XCTAssertEqual(payload["remainingMs"] as? Int, twentyFive - 60_000)
-        XCTAssertEqual(payload["deviceId"] as? String, "iphone")
-        XCTAssertEqual(payload["category"] as? String, "deep")
+        XCTAssertEqual(payload["phase"]?.stringValue, "running")
+        XCTAssertEqual(payload["sessionType"]?.stringValue, "focus")
+        XCTAssertEqual(payload["remainingMs"]?.intValue, twentyFive - 60_000)
+        XCTAssertEqual(payload["deviceId"]?.stringValue, "iphone")
+        XCTAssertEqual(payload["category"]?.stringValue, "deep")
+        XCTAssertEqual(payload["startedAt"]?.intValue, Int(t0))
+    }
+
+    func testMirrorSendsAbsentValuesAsNull() {
+        // An idle timer has no start and no linked tasks, and the server has to
+        // be told so explicitly — a key quietly missing would leave whatever it
+        // held before in place.
+        let payload = TimerState.idle.mirrorPayload(now: t0, deviceId: "iphone")
+        XCTAssertEqual(payload["startedAt"], .null)
+        XCTAssertEqual(payload["pausedAt"], .null)
+        XCTAssertEqual(payload["todoistTaskId"], .null)
+    }
+
+    func testMirrorCarriesTheLinkedTasks() {
+        var timer = TimerState()
+        timer.start(kind: .focus, intention: "Review", category: "deep",
+                    targetMs: twentyFive, taskRefs: "things:abc,123", now: t0)
+        XCTAssertEqual(timer.mirrorPayload(now: t0, deviceId: "iphone")["todoistTaskId"]?.stringValue, "things:abc,123")
     }
 
     func testMirrorReportsTheReflectPosterAsIdle() {
@@ -145,7 +163,19 @@ final class TimerStateTests: XCTestCase {
         // has simply stopped.
         var timer = running()
         timer.phase = .reflect
-        XCTAssertEqual(timer.mirrorPayload(now: t0, deviceId: "iphone")["phase"] as? String, "idle")
+        XCTAssertEqual(timer.mirrorPayload(now: t0, deviceId: "iphone")["phase"]?.stringValue, "idle")
+    }
+
+    func testMirrorEncodesAsTheServerExpects() throws {
+        // It has to survive JSON encoding as a plain object, because that is
+        // what it becomes inside a sync op.
+        let timer = running()
+        let data = try JSONEncoder().encode(timer.mirrorPayload(now: t0, deviceId: "iphone"))
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        XCTAssertEqual(json["phase"] as? String, "running")
+        XCTAssertEqual(json["targetMs"] as? Int, twentyFive)
+        XCTAssertTrue(json["pausedAt"] is NSNull)
     }
 
     func testTargetDateIsWhereTheNotificationGoes() {

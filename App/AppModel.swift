@@ -410,22 +410,41 @@ final class AppModel {
 
     /// Adopt a timer that is running on another device, having been asked to.
     func takeOverRemoteTimer() {
-        guard let remote = remoteTimer, remote.isRunning, let startedAt = remote.startedAt else { return }
-        var next = TimerState(
-            phase: remote.phase == "paused" ? .paused : .running,
+        guard let remote = remoteTimer, remote.isRunning, remote.startedAt != nil else { return }
+
+        let now = nowMs()
+        let isPaused = remote.phase == "paused"
+
+        /*
+         The session is re-based onto this device's clock rather than adopted
+         exactly as the other device recorded it.
+
+         How long it has run comes from the server's own reckoning — its
+         remaining figure against its target — because the wall time since it
+         started includes any stretch the other device spent paused, and
+         counting that as focus would be a lie. `startedAt` becomes whatever
+         makes that much elapsed time true as of now.
+
+         The pause has to be re-based too, and that is the part easy to get
+         wrong: the server's `pausedAt` is an instant on *its* clock, so
+         carrying it over would have this device subtract the whole span since
+         then a second time, on top of the elapsed figure already accounting
+         for it. A pause adopted now begins now.
+         */
+        let elapsed = max(0, remote.targetMs - remote.remainingMs(now: now))
+
+        let next = TimerState(
+            phase: isPaused ? .paused : .running,
             kind: SessionKind(rawValue: remote.sessionType),
             intention: remote.intention,
             category: remote.category,
             targetMs: remote.targetMs,
-            startedAt: startedAt,
-            pausedAt: remote.pausedAt,
+            startedAt: now - Millis(elapsed),
+            pausedAt: isPaused ? now : nil,
             pausedTotalMs: 0,
             taskRefs: remote.todoistTaskId
         )
-        // The elapsed time comes from the server's own reckoning, not from the
-        // wall clock since it started, so a paused stretch is not counted twice.
-        let elapsed = next.targetMs - remote.remainingMs(now: nowMs())
-        next.startedAt = nowMs() - Millis(max(0, elapsed))
+
         commit(next)
         remoteTimer = nil
     }
@@ -469,11 +488,16 @@ final class AppModel {
         sync()
     }
 
-    /// Refused when sessions still stand behind it — they are filed by its slug.
+    /// Returns the number of sessions standing behind it when the delete is
+    /// refused, so the sheet can say why rather than appearing to do nothing.
     func deleteCategory(_ category: CategoryRecord) -> Int? {
-        let count = (try? repository.sessionCount(forCategory: category.name)) ?? 0
-        guard count == 0 else { return count }
-        try? repository.deleteCategory(id: category.id)
+        do {
+            try repository.deleteCategory(id: category.id)
+        } catch let refusal as SeshRepository.CategoryInUse {
+            return refusal.sessionCount
+        } catch {
+            return nil
+        }
         reload()
         sync()
         return nil
