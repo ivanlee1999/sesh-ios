@@ -2,19 +2,18 @@
 import PackageDescription
 
 /**
- SeshKit — everything the app knows how to do, apart from how it looks.
+ SeshCore — the rules, and nothing else.
 
- `SeshCore` deliberately depends on nothing but Foundation. The rules that
- decide what a session lasted, which day a task belongs to, what colour the
- room becomes and who wins when two devices disagree are all here, as plain
- values and pure functions, so they can be tested in a second on any machine
- rather than only inside a simulator.
+ No dependencies at all, deliberately. The decisions that matter most here —
+ what a session lasted, which day a task belongs to, who wins when two devices
+ disagree, what colour the room becomes — are worth being able to test in a
+ second on any machine, including ones with no Xcode and no SQLite headers.
+ That is only true if nothing is in the way.
 
- Persistence lives apart in `SeshStore` for the same reason: SQLite is how the
- answers are kept, not what they are.
+ Persistence lives in the SeshStore package next door, where GRDB belongs.
  */
 let package = Package(
-    name: "SeshKit",
+    name: "SeshCore",
     platforms: [.iOS(.v17), .macOS(.v14)],
     products: [
         .library(name: "SeshCore", targets: ["SeshCore"]),

@@ -1,0 +1,79 @@
+# The Xcode project, as text.
+#
+# Generated with `xcodegen generate` rather than committed as a .xcodeproj,
+# because the project file is a merge conflict waiting to happen and nobody
+# reads it anyway. Everything worth knowing about the build is here.
+name: sesh
+options:
+  bundleIdPrefix: us.liyifan.sesh
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: ""          # set this to your team, or sign manually in Xcode
+    SWIFT_STRICT_CONCURRENCY: minimal
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+
+packages:
+  SeshCore:
+    path: Packages/SeshCore
+  SeshStore:
+    path: Packages/SeshStore
+
+targets:
+  sesh:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+    dependencies:
+      - package: SeshCore
+        product: SeshCore
+      - package: SeshStore
+        product: SeshStore
+      - target: SeshWidgets
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: us.liyifan.sesh
+        INFOPLIST_KEY_CFBundleDisplayName: sesh
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        # The timer's alarms are local, so the app needs no push entitlement at all.
+        INFOPLIST_KEY_UIBackgroundModes: fetch processing
+        INFOPLIST_KEY_NSSupportsLiveActivities: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: sesh
+        UILaunchScreen: {}
+        NSSupportsLiveActivities: true
+        UIBackgroundModes: [fetch, processing]
+        # Must match SeshApp.refreshTaskId, or the scheduler silently refuses it.
+        BGTaskSchedulerPermittedIdentifiers: [us.liyifan.sesh.refresh]
+        UIUserInterfaceStyle: Automatic
+
+  SeshWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: SeshWidgets
+      # Shared so the app and the widget cannot disagree about the payload.
+      - path: App/Timer/SeshActivityAttributes.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: us.liyifan.sesh.widgets
+        SKIP_INSTALL: YES
+    info:
+      path: SeshWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: sesh
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension

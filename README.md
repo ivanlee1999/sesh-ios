@@ -19,14 +19,18 @@ returns. See `docs/sync.md` (and `sesh-web`'s `/api/sync`) for how.
 
 | Path | What it is |
 |---|---|
-| `Packages/SeshKit/Sources/SeshCore` | The rules, as plain values and pure functions: session arithmetic, day keys, the accent engine, insights, the sync protocol. Depends on nothing but Foundation. |
-| `Packages/SeshKit/Tests/SeshCoreTests` | Unit tests, including fixtures captured from a real `sesh-web` so the wire types are held to what the server actually sends. |
+| `Packages/SeshCore` | The rules, as plain values and pure functions: session arithmetic, day keys, the accent engine, insights, the sync protocol and engine. Depends on nothing but Foundation. |
+| `Packages/SeshStore` | Persistence — the GRDB schema, the records, and the repository every write goes through. |
 | `App/` | The SwiftUI app. Apple platforms only. |
 | `SeshWidgets/` | Live Activity and Dynamic Island. |
 
-`SeshCore` is deliberately free of SwiftUI, UIKit and SQLite so it builds and
-tests anywhere — including on Linux, in under a second, which is where most of
-its tests were written.
+`SeshCore` has no dependencies at all, which is the point: it builds and tests
+anywhere in about a second, including on Linux, which is where most of its tests
+were written. Its tests include fixtures captured from a real running
+`sesh-web`, so the wire types are held to what the server actually sends rather
+than to a hand-written idea of it.
+
+See [`docs/sync.md`](docs/sync.md) for how offline and syncing actually work.
 
 ## Building
 
@@ -38,13 +42,33 @@ xcodegen generate
 open sesh.xcodeproj
 ```
 
-The logic package builds without Xcode:
+The logic package builds without Xcode, on any platform:
 
 ```sh
-cd Packages/SeshKit
-swift build
+cd Packages/SeshCore
 swift test
 ```
+
+`SeshStore` needs SQLite headers (`libsqlite3-dev` on Linux; already present in
+any Xcode toolchain).
+
+### Testing against a real server
+
+Most tests need nothing. The ones in `LiveServerTests` drive an actual
+`sesh-web` and are skipped unless you point them at one:
+
+```sh
+# in sesh-web
+APP_AUTH_USERNAME=you APP_AUTH_PASSWORD=secret NEXTAUTH_SECRET=dev npx next dev -p 3099
+
+# in Packages/SeshCore
+SESH_TEST_SERVER=http://127.0.0.1:3099 SESH_TEST_USER=you SESH_TEST_PASSWORD=secret swift test
+```
+
+They are the only tests that prove this client agrees with the server rather
+than with itself — and they have already earned their keep twice, catching a
+session type and a fractional timestamp that would each have broken the very
+first sync against real data.
 
 ## The colour rule
 

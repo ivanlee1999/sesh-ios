@@ -96,6 +96,52 @@ public actor APIClient: SyncTransport {
         try await sendRaw(path: "/api/tasks/snapshot?tz=\(escaped(timeZone.identifier))", method: "GET", body: nil)
     }
 
+    /**
+     Sign in to Things Cloud.
+
+     The credentials go to the server, not to Things directly: the account is
+     shared across every device, and Things authenticates with the password on
+     every single request, so it is the server that has to keep it. Nothing is
+     stored on this phone.
+     */
+    public func connectThings(email: String, password: String) async throws {
+        _ = try await sendRaw(
+            path: "/api/things/config",
+            method: "PUT",
+            body: try JSONSerialization.data(withJSONObject: ["email": email, "password": password])
+        )
+    }
+
+    public func disconnectThings() async throws {
+        _ = try await sendRaw(path: "/api/things/config", method: "DELETE", body: nil)
+    }
+
+    /// Whether Things is reachable right now — its own liveness, not ours.
+    public func thingsStatus() async throws -> Data {
+        try await sendRaw(path: "/api/things/status", method: "GET", body: nil)
+    }
+
+    /**
+     Google Calendar, through the device-code flow.
+
+     The only one of the three that fits a phone: the OAuth redirect the web app
+     uses returns to the server's own domain, which an app cannot intercept.
+     This hands back a short code to type into a browser, then polls until it is
+     approved. The tokens end up on the server, which is where calendar syncing
+     happens anyway.
+     */
+    public func startGoogleDeviceFlow() async throws -> Data {
+        try await sendRaw(path: "/api/auth/device", method: "POST", body: nil)
+    }
+
+    public func pollGoogleDeviceFlow(deviceCode: String) async throws -> Data {
+        try await sendRaw(
+            path: "/api/auth/device/poll",
+            method: "POST",
+            body: try JSONSerialization.data(withJSONObject: ["device_code": deviceCode])
+        )
+    }
+
     // ── Plumbing ────────────────────────────────────────────────────────
 
     private func escaped(_ value: String) -> String {
