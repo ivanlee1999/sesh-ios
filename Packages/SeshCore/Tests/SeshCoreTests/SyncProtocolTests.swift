@@ -123,7 +123,7 @@ final class SyncProtocolTests: XCTestCase {
         let token = try JSONDecoder().decode(TokenResponse.self, from: fixture("token"))
         XCTAssertFalse(token.token.isEmpty)
         XCTAssertGreaterThan(token.expiresAt, 0)
-        XCTAssertEqual(token.username, "ivan")
+        XCTAssertEqual(token.username, "example")
     }
 
     func testKnowsWhenToRefreshBeforeExpiry() {

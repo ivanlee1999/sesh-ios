@@ -11,8 +11,8 @@ import FoundationNetworking
 
  ```sh
  cd ../sesh-web
- APP_AUTH_USERNAME=ivan APP_AUTH_PASSWORD=testpass NEXTAUTH_SECRET=test npx next dev -p 3099
- SESH_TEST_SERVER=http://127.0.0.1:3099 SESH_TEST_USER=ivan SESH_TEST_PASSWORD=testpass swift test
+ APP_AUTH_USERNAME=you APP_AUTH_PASSWORD=your-dev-password NEXTAUTH_SECRET=any-dev-secret npx next dev -p 3099
+ SESH_TEST_SERVER=http://127.0.0.1:3099 SESH_TEST_USER=you SESH_TEST_PASSWORD=your-dev-password swift test
  ```
 
  Everything else in this suite proves the client agrees with itself. This is the
@@ -38,6 +38,11 @@ final class LiveServerTests: XCTestCase {
         guard let raw = ProcessInfo.processInfo.environment["SESH_TEST_SERVER"], let url = URL(string: raw) else {
             throw XCTSkip("Set SESH_TEST_SERVER to run the live-server tests")
         }
+        // No default credentials: this suite talks to a real server, and a
+        // guessable pair committed here would be a gift to anyone reading it.
+        guard !credentials.user.isEmpty, !credentials.password.isEmpty else {
+            throw XCTSkip("Set SESH_TEST_USER and SESH_TEST_PASSWORD too")
+        }
         baseURL = url
         tokens = MemoryTokenStore()
         client = APIClient(baseURL: url, tokens: tokens)
@@ -45,7 +50,7 @@ final class LiveServerTests: XCTestCase {
 
     private var credentials: (user: String, password: String) {
         let env = ProcessInfo.processInfo.environment
-        return (env["SESH_TEST_USER"] ?? "ivan", env["SESH_TEST_PASSWORD"] ?? "testpass")
+        return (env["SESH_TEST_USER"] ?? "", env["SESH_TEST_PASSWORD"] ?? "")
     }
 
     @discardableResult
