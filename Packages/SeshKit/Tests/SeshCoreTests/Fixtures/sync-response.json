@@ -1,0 +1,89 @@
+{
+  "results": [
+    {
+      "opId": "fx-delete-966170",
+      "status": "applied"
+    },
+    {
+      "opId": "fx-stale-966170",
+      "status": "stale"
+    },
+    {
+      "opId": "fx-unknown-kind-966170",
+      "status": "rejected",
+      "error": "Unknown op kind: nonsense.kind"
+    },
+    {
+      "opId": "fx-category-clash-966170",
+      "status": "rejected",
+      "error": "A category with this name already exists",
+      "category": {
+        "id": "e2bb0c05-9c03-416a-8038-847aeae92f4a",
+        "name": "development",
+        "label": "Deep Work",
+        "color": "#BE6E45",
+        "sortOrder": 0,
+        "isDefault": true
+      }
+    },
+    {
+      "opId": "fx-linked-966170",
+      "status": "duplicate"
+    }
+  ],
+  "changes": {
+    "sessions": [
+      {
+        "id": "manual-1789511566170",
+        "intention": "Linked to two tasks",
+        "category": "development",
+        "type": "focus",
+        "targetMs": 1500000,
+        "actualMs": 1620000,
+        "overflowMs": 120000,
+        "startedAt": 1789511566170,
+        "endedAt": 1789513186170,
+        "notes": "",
+        "rating": 5,
+        "todoistTaskId": "things:AbC123,456789",
+        "updatedAt": 1789516966170,
+        "deletedAt": null
+      },
+      {
+        "id": "manual-1789511966170",
+        "intention": "Deleted afterwards",
+        "category": "development",
+        "type": "break",
+        "targetMs": 300000,
+        "actualMs": 300000,
+        "overflowMs": 0,
+        "startedAt": 1789511966170,
+        "endedAt": 1789512266170,
+        "notes": "",
+        "rating": 0,
+        "todoistTaskId": null,
+        "updatedAt": 1789516966171,
+        "deletedAt": 1789516966171
+      }
+    ],
+    "categories": [],
+    "settings": []
+  },
+  "cursor": 147,
+  "hasMore": false,
+  "timer": {
+    "phase": "idle",
+    "sessionType": "focus",
+    "intention": "",
+    "category": "development",
+    "targetMs": 0,
+    "remainingMs": 0,
+    "overflowMs": 0,
+    "startedAt": null,
+    "pausedAt": null,
+    "updatedAt": 1789516907033,
+    "todoistTaskId": null,
+    "deviceId": "fixture-device"
+  },
+  "serverTime": 1789516966200
+}

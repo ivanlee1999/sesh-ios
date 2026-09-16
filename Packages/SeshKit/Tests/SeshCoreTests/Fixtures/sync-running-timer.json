@@ -1,0 +1,111 @@
+{
+  "results": [
+    {
+      "opId": "fixture-mirror",
+      "status": "applied"
+    }
+  ],
+  "changes": {
+    "sessions": [
+      {
+        "id": "manual-1788319798690",
+        "intention": "Draft the proposal",
+        "category": "development",
+        "type": "focus",
+        "targetMs": 1500000,
+        "actualMs": 60000,
+        "overflowMs": 0,
+        "startedAt": 1788319798690,
+        "endedAt": 1788319800678,
+        "notes": "",
+        "rating": 0,
+        "todoistTaskId": null,
+        "updatedAt": 1788319800678,
+        "deletedAt": null
+      },
+      {
+        "id": "manual-1788319825335",
+        "intention": "Review the pull request",
+        "category": "development",
+        "type": "focus",
+        "targetMs": 1500000,
+        "actualMs": 60000,
+        "overflowMs": 0,
+        "startedAt": 1788319825335,
+        "endedAt": 1788319827302,
+        "notes": "",
+        "rating": 0,
+        "todoistTaskId": null,
+        "updatedAt": 1788319827302,
+        "deletedAt": null
+      },
+      {
+        "id": "seed-1788253200000",
+        "intention": "Read two chapters",
+        "category": "writing",
+        "type": "focus",
+        "targetMs": 1500000,
+        "actualMs": 1500000,
+        "overflowMs": 180000,
+        "startedAt": 1788253200000,
+        "endedAt": 1788254700000,
+        "notes": "",
+        "rating": 3,
+        "todoistTaskId": null,
+        "updatedAt": 1788254700000,
+        "deletedAt": null
+      }
+    ],
+    "categories": [
+      {
+        "id": "e2bb0c05-9c03-416a-8038-847aeae92f4a",
+        "name": "development",
+        "label": "Deep Work",
+        "color": "#BE6E45",
+        "sortOrder": 0,
+        "isDefault": true,
+        "updatedAt": 1789516891003,
+        "deletedAt": null
+      },
+      {
+        "id": "71137247-8c3c-44a9-b607-61dc7249221c",
+        "name": "writing",
+        "label": "Writing",
+        "color": "#6E86B0",
+        "sortOrder": 1,
+        "isDefault": false,
+        "updatedAt": 1789516891003,
+        "deletedAt": null
+      }
+    ],
+    "settings": [
+      {
+        "key": "autoStartBreak",
+        "value": false,
+        "updatedAt": 1789516891003
+      },
+      {
+        "key": "autoStartFocus",
+        "value": false,
+        "updatedAt": 1789516891003
+      }
+    ]
+  },
+  "cursor": 131,
+  "hasMore": false,
+  "timer": {
+    "phase": "running",
+    "sessionType": "focus",
+    "intention": "Running elsewhere",
+    "category": "development",
+    "targetMs": 1500000,
+    "remainingMs": 900000,
+    "overflowMs": 0,
+    "startedAt": 1789516306993,
+    "pausedAt": null,
+    "updatedAt": 1789516907008,
+    "todoistTaskId": null,
+    "deviceId": "other-laptop"
+  },
+  "serverTime": 1789516907010
+}
