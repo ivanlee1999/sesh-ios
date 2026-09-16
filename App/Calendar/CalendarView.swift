@@ -54,7 +54,7 @@ struct CalendarSceneView: View {
                 }
             }
             SeshSegmented(
-                options: Span.allCases.map { ($0, $0.label, nil) },
+                options: Span.allCases.map { SegmentOption($0, $0.label) },
                 selection: $span
             )
         }
@@ -198,7 +198,9 @@ private struct MonthGrid: View {
         let days = monthDays()
         VStack(spacing: 6) {
             HStack(spacing: 0) {
-                ForEach(["M", "T", "W", "T", "F", "S", "S"], id: \.self) { label in
+                // Keyed by position, not by the letter: Tuesday and Thursday
+                // are both "T", and duplicate ForEach ids are undefined.
+                ForEach(Array(["M", "T", "W", "T", "F", "S", "S"].enumerated()), id: \.offset) { _, label in
                     Text(label)
                         .eyebrowStyle()
                         .foregroundStyle(theme.palette.textTertiary)

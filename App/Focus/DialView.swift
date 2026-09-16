@@ -25,6 +25,9 @@ struct DialView: View {
 
     @Environment(\.theme) private var theme
     @State private var scrubbing: Int?
+    /// Flipped once on appearance to give the overtime badge something to
+    /// animate between; a constant opacity has nothing to repeat.
+    @State private var pulsing = false
 
     private var elapsedFraction: Double {
         guard totalMs > 0 else { return 0 }
@@ -168,10 +171,11 @@ struct DialView: View {
                 Text(Format.overtime(remainingMs))
                     .numeralStyle(15, weight: .semibold)
                     .foregroundStyle(theme.accent)
-                    // Pulses, so overtime reads as something happening rather
-                    // than a number that has stopped.
-                    .opacity(0.9)
-                    .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: isOvertime)
+                    // Pulses, so overtime reads as something still happening
+                    // rather than a number that has stopped.
+                    .opacity(pulsing ? 0.45 : 0.95)
+                    .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: pulsing)
+                    .onAppear { pulsing = true }
             }
         }
         .multilineTextAlignment(.center)

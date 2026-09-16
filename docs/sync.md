@@ -21,10 +21,24 @@ sequence, not a guess about clocks. Timestamps would have been easier and wrong:
 two writes land in the same millisecond all the time, and no two devices agree
 about what time it is anyway.
 
-**`updated_at` settles disputes.** When both sides changed the same session, the
-later edit wins, field by field. Timings are not in that contest — they are set
-by whoever ran the session and never revised — so the only things that can
-actually conflict are the title, the category, the notes and the rating.
+**`updated_at` settles disputes, a row at a time.** When both sides changed the
+same session, the later edit wins — and it wins the whole editable set, not
+field by field. Timings are outside the contest, being set by whoever ran the
+session and never revised, so what can actually conflict is the title, the
+category, the notes, the rating and the task links.
+
+The row-level part is a deliberate simplification with a real cost, worth
+stating plainly: a note added on the phone at 10:00 and a rating given on the
+laptop at 10:01 do not merge. The phone's op comes back `stale`, and the note
+is gone. Fixing it properly needs a timestamp per field. Until then the window
+is kept small — the app syncs about two seconds after any change, and on every
+return to foreground.
+
+Deletions are held to the same rule rather than being privileged: a delete
+queued at 10:00 loses to an edit made at 10:05 somewhere else, because the edit
+is the more recent intention. The client and the server apply that identically,
+which matters — if they disagreed, a row would appear or vanish depending on
+which end was asked.
 
 ## One exchange
 

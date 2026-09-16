@@ -71,15 +71,36 @@ extension View {
     }
 }
 
+/**
+ One cell of a segmented control.
+
+ A named struct rather than a tuple: a bare `nil` in a tuple literal inside a
+ `map` has no contextual type to take, and tuple labels have to line up exactly
+ at every call site. A struct with a defaulted `detail` sidesteps both.
+ */
+struct SegmentOption<Value: Hashable>: Identifiable {
+    let value: Value
+    let label: String
+    var detail: String?
+
+    var id: Value { value }
+
+    init(_ value: Value, _ label: String, _ detail: String? = nil) {
+        self.value = value
+        self.label = label
+        self.detail = detail
+    }
+}
+
 /// A sliding segmented control — tonal track, surface thumb.
 struct SeshSegmented<Value: Hashable>: View {
-    let options: [(value: Value, label: String, detail: String?)]
+    let options: [SegmentOption<Value>]
     @Binding var selection: Value
     @Environment(\.theme) private var theme
 
     var body: some View {
         HStack(spacing: 0) {
-            ForEach(options, id: \.value) { option in
+            ForEach(options) { option in
                 Button {
                     Haptics.light()
                     withAnimation(Motion.standard) { selection = option.value }

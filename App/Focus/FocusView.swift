@@ -39,6 +39,16 @@ struct FocusView: View {
         .animation(Motion.standard, value: model.timer.phase)
         .animation(Motion.standard, value: model.reflecting?.id)
         .onAppear { intention = model.timer.intention }
+        /*
+         The field is local state, so it has to be told when the timer's topic
+         changes underneath it. Picking tasks on the Tasks tab sets the topic
+         and switches here — but this view was already alive, so `onAppear` had
+         long since run, and pressing Start would have written the stale text
+         back over the titles just chosen.
+         */
+        .onChange(of: model.timer.intention) { _, updated in
+            if updated != intention { intention = updated }
+        }
         .sheet(isPresented: $showingTaskPicker) {
             TaskPickerSheet()
                 .presentationDetents([.medium, .large])
@@ -69,9 +79,9 @@ struct FocusView: View {
 
                     SeshSegmented(
                         options: [
-                            (BreakKind.focus, "Focus", "\(model.settings.focusDuration) min"),
-                            (BreakKind.short, "Short break", "\(model.settings.breakDuration) min"),
-                            (BreakKind.long, "Long break", "\(model.settings.longBreakDuration) min"),
+                            SegmentOption(BreakKind.focus, "Focus", "\(model.settings.focusDuration) min"),
+                            SegmentOption(BreakKind.short, "Short break", "\(model.settings.breakDuration) min"),
+                            SegmentOption(BreakKind.long, "Long break", "\(model.settings.longBreakDuration) min"),
                         ],
                         selection: $breakKind
                     )
@@ -166,7 +176,8 @@ struct FocusView: View {
                 .padding(.horizontal, 4)
 
                 if let refs = model.timer.taskRefs, !refs.isEmpty {
-                    Text("Logging to \(TaskRef.decodeList(refs).count) task\(TaskRef.decodeList(refs).count == 1 ? "" : "s")")
+                    let linked = TaskRef.decodeList(refs).count
+                    Text("Logging to \(linked) task\(linked == 1 ? "" : "s")")
                         .metaStyle()
                         .foregroundStyle(theme.palette.textTertiary)
                 }
