@@ -1,12 +1,26 @@
+import Foundation
 import SwiftUI
 import SeshCore
 
 extension Color {
-    /// `#rgb` and `#rrggbb`, the two forms the palette is written in.
+    /**
+     `#rgb` and `#rrggbb`, the two forms the palette is written in.
+
+     A string that is neither falls back to the house accent rather than to
+     black. Category colours come from the database, and a malformed one should
+     look like a colour somebody chose, not like a hole in the interface.
+     */
     init(hex: String) {
         let digits = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
         var value: UInt64 = 0
-        Scanner(string: digits).scanHexInt64(&value)
+        let parsed = Scanner(string: digits).scanHexInt64(&value)
+
+        guard parsed, digits.count == 3 || digits.count == 6 else {
+            // The house brick, written out rather than looked up, so this can
+            // never end up asking itself the same question again.
+            self.init(.sRGB, red: 0xc0 / 255, green: 0x52 / 255, blue: 0x2d / 255, opacity: 1)
+            return
+        }
 
         let r, g, b: Double
         if digits.count == 3 {

@@ -287,7 +287,10 @@ struct UnderlinedField: View {
                 .textFieldStyle(.plain)
                 .submitLabel(.done)
                 .focused($focused)
-                .onSubmit { focused = false; onCommit() }
+                // Only one commit path. Submitting used to call `onCommit`
+                // itself *and* drop focus, which called it again — two model
+                // writes and two queued sync ops for one press of Done.
+                .onSubmit { focused = false }
                 .onChange(of: focused) { _, isFocused in
                     if !isFocused { onCommit() }
                 }
