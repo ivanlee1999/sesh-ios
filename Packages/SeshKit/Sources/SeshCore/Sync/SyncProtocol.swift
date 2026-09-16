@@ -10,6 +10,42 @@ import Foundation
  right up until it meets the server.
  */
 
+/**
+ Numbers, read the way they are meant rather than the way they arrive.
+
+ Every quantity in this protocol is a whole number: milliseconds since the
+ epoch, a duration, a rating out of five. Swift's decoder is strict about that
+ and will refuse `1789517179528.8936` for an `Int64` — and because a sync page
+ arrives as one document, refusing one field throws away every row beside it.
+ A single malformed timestamp written by some other client would cost this one
+ its entire history.
+
+ The server now rounds on the way in, so this should never be needed. It is
+ here because "should never" is not a property a client can verify, and losing
+ a page of someone's sessions is a poor way to find out.
+ */
+private extension KeyedDecodingContainer {
+    func decodeRounded(_ key: Key) throws -> Millis {
+        if let exact = try? decode(Millis.self, forKey: key) { return exact }
+        return Millis(try decode(Double.self, forKey: key).rounded())
+    }
+
+    /// Absent and null are the same answer here: the server omits a field it has
+    /// nothing to say about (a category quoted back inside an op result carries
+    /// no timestamps at all), and asking whether it is null would throw.
+    func decodeRoundedIfPresent(_ key: Key) throws -> Millis? {
+        guard contains(key), try !decodeNil(forKey: key) else { return nil }
+        if let exact = try? decodeIfPresent(Millis.self, forKey: key) { return exact }
+        guard let value = try decodeIfPresent(Double.self, forKey: key) else { return nil }
+        return Millis(value.rounded())
+    }
+
+    func decodeRoundedInt(_ key: Key) throws -> Int {
+        if let exact = try? decode(Int.self, forKey: key) { return exact }
+        return Int(try decode(Double.self, forKey: key).rounded())
+    }
+}
+
 /// Any JSON value — settings hold numbers, strings and booleans alike.
 public enum JSONValue: Equatable, Sendable, Codable {
     case string(String)
@@ -102,6 +138,11 @@ public enum OpStatus: String, Sendable, Codable {
 }
 
 public struct OpResult: Equatable, Sendable, Codable {
+    public init(opId: String, status: OpStatus, error: String?, category: RemoteCategory?, sessionCount: Int?) {
+        self.opId = opId; self.status = status; self.error = error
+        self.category = category; self.sessionCount = sessionCount
+    }
+
     public let opId: String
     public let status: OpStatus
     public let error: String?
@@ -128,6 +169,29 @@ public struct RemoteSession: Equatable, Sendable, Codable {
     /// Non-nil means deleted elsewhere: the client drops its own copy.
     public let deletedAt: Millis?
 
+    enum CodingKeys: String, CodingKey {
+        case id, intention, category, type, targetMs, actualMs, overflowMs
+        case startedAt, endedAt, notes, rating, todoistTaskId, updatedAt, deletedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        intention = try c.decodeIfPresent(String.self, forKey: .intention) ?? ""
+        category = try c.decodeIfPresent(String.self, forKey: .category) ?? ""
+        type = try c.decodeIfPresent(SessionKind.self, forKey: .type) ?? .focus
+        targetMs = try c.decodeRoundedInt(.targetMs)
+        actualMs = try c.decodeRoundedInt(.actualMs)
+        overflowMs = try c.decodeRoundedInt(.overflowMs)
+        startedAt = try c.decodeRounded(.startedAt)
+        endedAt = try c.decodeRounded(.endedAt)
+        notes = try c.decodeIfPresent(String.self, forKey: .notes) ?? ""
+        rating = try c.decodeRoundedInt(.rating)
+        todoistTaskId = try c.decodeIfPresent(String.self, forKey: .todoistTaskId)
+        updatedAt = try c.decodeRounded(.updatedAt)
+        deletedAt = try c.decodeRoundedIfPresent(.deletedAt)
+    }
+
     public var session: Session {
         Session(
             id: id, intention: intention, category: category, type: type,
@@ -147,18 +211,54 @@ public struct RemoteCategory: Equatable, Sendable, Codable {
     public let isDefault: Bool
     public let updatedAt: Millis?
     public let deletedAt: Millis?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, label, color, sortOrder, isDefault, updatedAt, deletedAt
+    }
+
+    public init(id: String, name: String, label: String, color: String,
+                sortOrder: Int, isDefault: Bool, updatedAt: Millis?, deletedAt: Millis?) {
+        self.id = id; self.name = name; self.label = label; self.color = color
+        self.sortOrder = sortOrder; self.isDefault = isDefault
+        self.updatedAt = updatedAt; self.deletedAt = deletedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        label = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
+        color = try c.decodeIfPresent(String.self, forKey: .color) ?? Accent.defaultAccent
+        sortOrder = try c.decodeRoundedInt(.sortOrder)
+        isDefault = try c.decodeIfPresent(Bool.self, forKey: .isDefault) ?? false
+        updatedAt = try c.decodeRoundedIfPresent(.updatedAt)
+        deletedAt = try c.decodeRoundedIfPresent(.deletedAt)
+    }
 }
 
 public struct RemoteSetting: Equatable, Sendable, Codable {
     public let key: String
     public let value: JSONValue
     public let updatedAt: Millis
+
+    enum CodingKeys: String, CodingKey { case key, value, updatedAt }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        key = try c.decode(String.self, forKey: .key)
+        value = try c.decodeIfPresent(JSONValue.self, forKey: .value) ?? .null
+        updatedAt = try c.decodeRounded(.updatedAt)
+    }
 }
 
 public struct SyncChanges: Equatable, Sendable, Codable {
     public let sessions: [RemoteSession]
     public let categories: [RemoteCategory]
     public let settings: [RemoteSetting]
+
+    public init(sessions: [RemoteSession], categories: [RemoteCategory], settings: [RemoteSetting]) {
+        self.sessions = sessions; self.categories = categories; self.settings = settings
+    }
 }
 
 public struct RemoteTimer: Equatable, Sendable, Codable {
@@ -174,6 +274,36 @@ public struct RemoteTimer: Equatable, Sendable, Codable {
     public let updatedAt: Millis
     public let todoistTaskId: String?
     public let deviceId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case phase, sessionType, intention, category, targetMs, remainingMs, overflowMs
+        case startedAt, pausedAt, updatedAt, todoistTaskId, deviceId
+    }
+
+    public init(phase: String, sessionType: String, intention: String, category: String,
+                targetMs: Int, remainingMs: Int, overflowMs: Int, startedAt: Millis?,
+                pausedAt: Millis?, updatedAt: Millis, todoistTaskId: String?, deviceId: String?) {
+        self.phase = phase; self.sessionType = sessionType; self.intention = intention
+        self.category = category; self.targetMs = targetMs; self.remainingMs = remainingMs
+        self.overflowMs = overflowMs; self.startedAt = startedAt; self.pausedAt = pausedAt
+        self.updatedAt = updatedAt; self.todoistTaskId = todoistTaskId; self.deviceId = deviceId
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        phase = try c.decodeIfPresent(String.self, forKey: .phase) ?? "idle"
+        sessionType = try c.decodeIfPresent(String.self, forKey: .sessionType) ?? "focus"
+        intention = try c.decodeIfPresent(String.self, forKey: .intention) ?? ""
+        category = try c.decodeIfPresent(String.self, forKey: .category) ?? ""
+        targetMs = try c.decodeRoundedInt(.targetMs)
+        remainingMs = try c.decodeRoundedInt(.remainingMs)
+        overflowMs = try c.decodeRoundedInt(.overflowMs)
+        startedAt = try c.decodeRoundedIfPresent(.startedAt)
+        pausedAt = try c.decodeRoundedIfPresent(.pausedAt)
+        updatedAt = try c.decodeRounded(.updatedAt)
+        todoistTaskId = try c.decodeIfPresent(String.self, forKey: .todoistTaskId)
+        deviceId = try c.decodeIfPresent(String.self, forKey: .deviceId)
+    }
 
     public var isRunning: Bool { phase == "running" || phase == "paused" }
 
@@ -195,6 +325,12 @@ public struct RemoteTimer: Equatable, Sendable, Codable {
 }
 
 public struct SyncResponse: Equatable, Sendable, Codable {
+    public init(results: [OpResult], changes: SyncChanges, cursor: Int, hasMore: Bool,
+                timer: RemoteTimer?, serverTime: Millis) {
+        self.results = results; self.changes = changes; self.cursor = cursor
+        self.hasMore = hasMore; self.timer = timer; self.serverTime = serverTime
+    }
+
     public let results: [OpResult]
     public let changes: SyncChanges
     public let cursor: Int
@@ -206,6 +342,11 @@ public struct SyncResponse: Equatable, Sendable, Codable {
 // ── Auth ────────────────────────────────────────────────────────────────
 
 public struct TokenResponse: Equatable, Sendable, Codable {
+    public init(token: String, expiresAt: Millis, username: String?, authDisabled: Bool?) {
+        self.token = token; self.expiresAt = expiresAt
+        self.username = username; self.authDisabled = authDisabled
+    }
+
     public let token: String
     public let expiresAt: Millis
     public let username: String?

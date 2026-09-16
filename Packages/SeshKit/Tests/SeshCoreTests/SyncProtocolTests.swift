@@ -174,3 +174,37 @@ final class SyncProtocolTests: XCTestCase {
         }
     }
 }
+
+final class MalformedNumberTests: XCTestCase {
+    /**
+     A fractional millisecond, which is how this was found: a client sent
+     `Date.now()` through a float path, SQLite kept the column as a REAL because
+     the value was not losslessly an integer, and from then on every client
+     pulling that row got `1789517179528.8936`. A strict decoder threw away the
+     entire page it arrived in — 113 other sessions included.
+     */
+    func testAFractionalTimestampDoesNotCostTheWholePage() throws {
+        let json = """
+        {"id":"manual-1","intention":"","category":"deep","type":"focus",
+         "targetMs":1500000,"actualMs":1500000,"overflowMs":0,
+         "startedAt":1789515379528,"endedAt":1789516879528,"notes":"","rating":5,
+         "todoistTaskId":null,"updatedAt":1789517179528.8936,"deletedAt":null}
+        """.data(using: .utf8)!
+
+        let session = try JSONDecoder().decode(RemoteSession.self, from: json)
+        XCTAssertEqual(session.updatedAt, 1_789_517_179_529)
+        XCTAssertEqual(session.startedAt, 1_789_515_379_528)
+    }
+
+    func testAMissingOptionalFieldIsNotAFailure() throws {
+        let json = """
+        {"id":"manual-2","category":"deep","targetMs":0,"actualMs":0,"overflowMs":0,
+         "startedAt":1,"endedAt":2,"rating":0,"updatedAt":2}
+        """.data(using: .utf8)!
+
+        let session = try JSONDecoder().decode(RemoteSession.self, from: json)
+        XCTAssertEqual(session.intention, "")
+        XCTAssertEqual(session.type, .focus)
+        XCTAssertNil(session.deletedAt)
+    }
+}

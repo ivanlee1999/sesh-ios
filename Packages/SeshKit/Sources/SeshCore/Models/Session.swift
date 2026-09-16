@@ -3,10 +3,38 @@ import Foundation
 /// Epoch milliseconds — the unit every timestamp crossing the wire is in.
 public typealias Millis = Int64
 
-public enum SessionKind: String, Codable, Sendable, CaseIterable {
-    case focus
-    /// `break` is a keyword; the wire value is not.
-    case rest = "break"
+/**
+ What kind of sitting a session was.
+
+ Not an enum, despite looking like one. The live database holds a third value —
+ `short`, left over from an older version of the app — and roughly a quarter of
+ the existing history is filed under it. A closed enum refuses to decode that,
+ and because a sync response arrives as one document, a single unrecognised row
+ costs the client the entire page: no sessions, no categories, no cursor. The
+ first sync against real data would simply have failed, and gone on failing.
+
+ So the raw value is kept exactly as it arrives, whatever it is, and questions
+ are asked of it rather than of a case list. An unknown kind round-trips back
+ to the server unchanged instead of being quietly rewritten to something we
+ recognise.
+ */
+public struct SessionKind: RawRepresentable, Codable, Equatable, Hashable, Sendable {
+    public let rawValue: String
+
+    public init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    public static let focus = SessionKind(rawValue: "focus")
+    /// `break` is a keyword in Swift; it is not on the wire.
+    public static let rest = SessionKind(rawValue: "break")
+
+    /// Focus is the one kind that counts toward a day's total and its streak,
+    /// which is exactly how the web app's analytics treat it.
+    public var isFocus: Bool { rawValue == "focus" }
+
+    /// Anything that is not focus is a pause of some sort — including `short`.
+    public var isRest: Bool { !isFocus }
 }
 
 /**

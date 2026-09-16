@@ -234,3 +234,48 @@ final class TaskRefTests: XCTestCase {
         XCTAssertEqual(session.taskRefs.map(\.provider), [.todoist, .things])
     }
 }
+
+final class LegacySessionKindTests: XCTestCase {
+    /**
+     The live database holds 27 sessions of type `short`, from a version of the
+     app that predates the focus/break split. A closed enum refused to decode
+     them, and because a sync response is one document, that one unknown value
+     cost the whole page — the first sync against real data failed outright.
+     */
+    func testAnUnknownKindDecodesInsteadOfFailingThePage() throws {
+        let json = """
+        {"id":"manual-1","intention":"Legacy","category":"development","type":"short",
+         "targetMs":300000,"actualMs":300000,"overflowMs":0,"startedAt":1000,"endedAt":301000,
+         "notes":"","rating":0,"todoistTaskId":null,"updatedAt":301000,"deletedAt":null}
+        """.data(using: .utf8)!
+
+        let remote = try JSONDecoder().decode(RemoteSession.self, from: json)
+        XCTAssertEqual(remote.type.rawValue, "short")
+        XCTAssertFalse(remote.type.isFocus)
+        XCTAssertTrue(remote.type.isRest)
+    }
+
+    func testAnUnknownKindGoesBackExactlyAsItArrived() throws {
+        // Rewriting it to something we recognise would quietly rewrite history.
+        let session = Session(id: "manual-1", category: "development", type: SessionKind(rawValue: "short"),
+                              startedAt: 1000, endedAt: 301_000)
+        let encoded = try JSONEncoder().encode(session)
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(json["type"] as? String, "short")
+    }
+
+    func testLegacyBreaksDoNotCountAsFocus() {
+        // Which is how the web app's analytics have always treated them.
+        let la = TimeZone(identifier: "America/Los_Angeles")!
+        let start = DayKey.startOfDayMillis("2024-05-10", timeZone: la) + 12 * 3_600_000
+        let sessions = [
+            Session(id: "a", category: "deep", type: .focus, actualMs: 1_500_000, startedAt: start, endedAt: start + 1_500_000),
+            Session(id: "b", category: "deep", type: SessionKind(rawValue: "short"), actualMs: 300_000, startedAt: start, endedAt: start + 300_000),
+        ]
+        let insights = Insights.compute(sessions: sessions,
+                                        now: Date(timeIntervalSince1970: Double(start + 3_600_000) / 1000),
+                                        timeZone: la)
+        XCTAssertEqual(insights.todayCount, 1)
+        XCTAssertEqual(insights.todayMs, 1_500_000)
+    }
+}

@@ -37,8 +37,10 @@ public struct Insights: Equatable, Sendable {
         dayCount: Int = 7,
         topCategories: Int = 4
     ) -> Insights {
-        // Breaks are not focus; they are the gaps between it.
-        let focus = sessions.filter { $0.type == .focus }
+        // Breaks are not focus; they are the gaps between it. Asked as a
+        // question rather than matched against a case list, so the legacy
+        // `short` kind in the existing history is counted as the rest it was.
+        let focus = sessions.filter { $0.type.isFocus }
 
         let todayKey = DayKey.key(for: now, timeZone: timeZone)
         let bucketed = Dictionary(grouping: focus) { session in
