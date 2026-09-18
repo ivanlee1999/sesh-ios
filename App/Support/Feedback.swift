@@ -46,11 +46,24 @@ enum Haptics {
 actor Chime {
     static let shared = Chime()
 
+    /**
+     Mono, and the connection is made with it explicitly.
+
+     `connect(_:to:format: nil)` adopts the *mixer's* format, which is stereo on
+     a phone. Scheduling this one-channel buffer onto a two-channel connection
+     trips an assertion inside AVAudioPlayerNode, and it fails as an Objective-C
+     exception — which `catch` below cannot catch, so what should have been a
+     missing sound took the whole app down at the end of every session. Handing
+     the engine this format instead leaves it to convert, which it is happy to
+     do, and keeps the buffer and the connection provably in agreement.
+     */
+    private static let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1)
+
     private var engine: AVAudioEngine?
     private var player: AVAudioPlayerNode?
 
     func play(focus: Bool, enabled: Bool) {
-        guard enabled else { return }
+        guard enabled, let format = Self.format else { return }
         let frequency = focus ? 880.0 : 660.0
 
         do {
@@ -63,11 +76,11 @@ actor Chime {
             let player = self.player ?? AVAudioPlayerNode()
             if self.engine == nil {
                 engine.attach(player)
-                engine.connect(player, to: engine.mainMixerNode, format: nil)
+                engine.connect(player, to: engine.mainMixerNode, format: format)
                 self.engine = engine
                 self.player = player
             }
-            guard let buffer = Self.tone(frequency: frequency, seconds: 0.7) else { return }
+            guard let buffer = Self.tone(frequency: frequency, seconds: 0.7, format: format) else { return }
             if !engine.isRunning { try engine.start() }
             player.scheduleBuffer(buffer, at: nil, options: [], completionHandler: nil)
             player.play()
@@ -77,9 +90,8 @@ actor Chime {
     }
 
     /// One sine wave, faded out exponentially so it rings rather than clicks.
-    private static func tone(frequency: Double, seconds: Double) -> AVAudioPCMBuffer? {
-        let rate = 44_100.0
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 1) else { return nil }
+    private static func tone(frequency: Double, seconds: Double, format: AVAudioFormat) -> AVAudioPCMBuffer? {
+        let rate = format.sampleRate
         let frames = AVAudioFrameCount(rate * seconds)
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return nil }
         buffer.frameLength = frames

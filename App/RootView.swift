@@ -18,6 +18,7 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var hasOnboarded = DeviceDefaults.hasOnboarded
+    @State private var deferredSignIn = DeviceDefaults.deferredSignIn
     @State private var showingSignIn = false
 
     var body: some View {
@@ -26,10 +27,15 @@ struct RootView: View {
         ZStack {
             if !hasOnboarded {
                 OnboardingView { hasOnboarded = true }
-            } else if model.authState == .signedOut && model.sessions.isEmpty {
+            } else if model.authState == .signedOut && model.sessions.isEmpty && !deferredSignIn {
                 // Only on a fresh install is signing in the whole screen: with
                 // nothing stored yet there is genuinely nothing else to show.
-                LoginView()
+                // It is an invitation, not a gate — the way past it matters,
+                // because nothing here is stored on the server first.
+                LoginView(onDefer: {
+                    DeviceDefaults.deferredSignIn = true
+                    deferredSignIn = true
+                })
             } else {
                 shell
             }
@@ -50,9 +56,22 @@ struct RootView: View {
     }
 
     private var shell: some View {
-        ZStack(alignment: .top) {
+        // The banner sits above the TabView rather than over it. Floated in a
+        // ZStack it covered whatever each screen puts at the top, which is a
+        // title on four of the five; a `safeAreaInset` on the TabView does not
+        // reach the NavigationStack inside each tab, so it clipped them just
+        // the same. Stacked, the space is really taken, and when there is
+        // nothing to say the banner is an EmptyView and costs no height.
+        VStack(spacing: 0) {
+            statusBanner
+
             TabView(selection: Binding(get: { model.selectedTab }, set: { model.selectedTab = $0 })) {
                 FocusView()
+                    // On the content, not on the TabView: `.toolbar(_:for:
+                    // .tabBar)` addresses the bar of the *enclosing* container,
+                    // so hanging it off the TabView hides nothing and the
+                    // running screen keeps a tab bar it is not supposed to have.
+                    .toolbar(model.timer.isActive ? .hidden : .visible, for: .tabBar)
                     .tag(AppModel.Tab.focus)
                     .tabItem { Label(AppModel.Tab.focus.label, systemImage: AppModel.Tab.focus.symbol) }
 
@@ -72,11 +91,6 @@ struct RootView: View {
                     .tag(AppModel.Tab.settings)
                     .tabItem { Label(AppModel.Tab.settings.label, systemImage: AppModel.Tab.settings.symbol) }
             }
-            // Hidden rather than removed: taking the TabView away mid-session
-            // would tear down the screen you are looking at.
-            .toolbar(model.timer.isActive ? .hidden : .visible, for: .tabBar)
-
-            statusBanner
         }
     }
 
@@ -84,7 +98,10 @@ struct RootView: View {
     @ViewBuilder
     private var statusBanner: some View {
         if !model.timer.isActive {
-            if model.authState == .signedOut && !model.sessions.isEmpty {
+            // `deferredSignIn` matters here too: someone who chose to start
+            // without a server has no sessions yet, and the banner is the only
+            // way back to the sign-in screen once it has been dismissed.
+            if model.authState == .signedOut && (!model.sessions.isEmpty || deferredSignIn) {
                 banner(
                     text: "Signed out — your work is safe here",
                     action: "Sign in",

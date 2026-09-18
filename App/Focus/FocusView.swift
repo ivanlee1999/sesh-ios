@@ -16,7 +16,9 @@ struct FocusView: View {
     @State private var intention: String = ""
     @State private var showingTaskPicker = false
     @State private var showingAbandonConfirm = false
-    @State private var breakKind: BreakKind = .short
+    // Focus, like the server's `timer_state.session_type` — opening a focus
+    // timer on a five-minute break offers the wrong thing first.
+    @State private var breakKind: BreakKind = .focus
 
     enum BreakKind: Hashable { case focus, short, long }
 

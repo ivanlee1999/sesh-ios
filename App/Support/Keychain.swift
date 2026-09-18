@@ -105,6 +105,7 @@ enum DeviceDefaults {
     enum Key: String {
         case serverURL = "sesh.serverURL"
         case onboarded = "sesh.onboarded"
+        case deferredSignIn = "sesh.deferredSignIn"
         case calendarView = "sesh.calendarView"
         case categoryRecency = "sesh.categoryRecency"
         case pomodoroCycle = "sesh.pomodoroCycle"
@@ -118,6 +119,16 @@ enum DeviceDefaults {
     static var hasOnboarded: Bool {
         get { store.bool(forKey: Key.onboarded.rawValue) }
         set { store.set(newValue, forKey: Key.onboarded.rawValue) }
+    }
+
+    /// Whether the person chose to get on with it without a server.
+    ///
+    /// Remembered rather than held in view state, because otherwise the next
+    /// launch asks again — and until a session exists there is still nothing
+    /// to show behind the question.
+    static var deferredSignIn: Bool {
+        get { store.bool(forKey: Key.deferredSignIn.rawValue) }
+        set { store.set(newValue, forKey: Key.deferredSignIn.rawValue) }
     }
 
     static var calendarView: String {

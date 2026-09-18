@@ -10,6 +10,18 @@ import SeshCore
  renews itself long before it expires.
  */
 struct LoginView: View {
+    /**
+     Offered when this screen is the only thing on screen, on a fresh install.
+
+     Without it the promise two lines further down — that sessions stay on this
+     phone either way — is not keepable: signing in would be the one way past a
+     screen you reach before you own a single session, so a server that is
+     down, unreachable, or simply not yours yet locks you out of a timer that
+     never needed it. Nil when the screen is a sheet, which can already be
+     dismissed.
+     */
+    var onDefer: (() -> Void)?
+
     @Environment(AppModel.self) private var model
     @Environment(\.theme) private var theme
 
@@ -74,6 +86,14 @@ struct LoginView: View {
                         .metaStyle()
                         .foregroundStyle(theme.palette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
+
+                    if let onDefer {
+                        Button("Start without a server") { onDefer() }
+                            .font(Typeface.font(15, .semibold))
+                            .buttonStyle(.plain)
+                            .foregroundStyle(theme.accent)
+                            .padding(.top, 2)
+                    }
                 }
                 .padding(24)
             }
