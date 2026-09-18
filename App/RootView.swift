@@ -18,7 +18,6 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var hasOnboarded = DeviceDefaults.hasOnboarded
-    @State private var deferredSignIn = DeviceDefaults.deferredSignIn
     @State private var showingSignIn = false
 
     var body: some View {
@@ -27,16 +26,12 @@ struct RootView: View {
         ZStack {
             if !hasOnboarded {
                 OnboardingView { hasOnboarded = true }
-            } else if model.authState == .signedOut && model.sessions.isEmpty && !deferredSignIn {
-                // Only on a fresh install is signing in the whole screen: with
-                // nothing stored yet there is genuinely nothing else to show.
-                // It is an invitation, not a gate — the way past it matters,
-                // because nothing here is stored on the server first.
-                LoginView(onDefer: {
-                    DeviceDefaults.deferredSignIn = true
-                    deferredSignIn = true
-                })
             } else {
+                // Straight in. There is no signed-out screen because there is
+                // no signed-in one either: this is a standalone app that can
+                // also talk to a server, and the timer, the history and the
+                // insights are all local. Signing in is offered in Settings,
+                // for the one thing it buys — the same sessions on a laptop.
                 shell
             }
         }
@@ -98,10 +93,11 @@ struct RootView: View {
     @ViewBuilder
     private var statusBanner: some View {
         if !model.timer.isActive {
-            // `deferredSignIn` matters here too: someone who chose to start
-            // without a server has no sessions yet, and the banner is the only
-            // way back to the sign-in screen once it has been dismissed.
-            if model.authState == .signedOut && (!model.sessions.isEmpty || deferredSignIn) {
+            // Only for a phone that was signed in and is not any more. Never
+            // having signed in is not a problem to report; it is how the app
+            // is meant to work, and a standing warning about it would be
+            // nagging someone to fix something that is not broken.
+            if model.authState == .signedOut && model.expectsSignIn {
                 banner(
                     text: "Signed out — your work is safe here",
                     action: "Sign in",

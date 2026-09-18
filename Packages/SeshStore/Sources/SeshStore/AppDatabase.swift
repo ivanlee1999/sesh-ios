@@ -146,6 +146,49 @@ public final class AppDatabase: Sendable {
             try db.execute(sql: "INSERT OR IGNORE INTO remoteTimerRow (id, payload, seenAt) VALUES (1, NULL, 0)")
         }
 
+        /**
+         The categories a phone starts with.
+
+         Until now they only ever arrived by syncing, which was fine when
+         signing in was the way in and is wrong now that it is not: with no
+         server there were no categories at all, so every session was filed
+         under the empty string and the app said things like "Logged to ." A
+         standalone app has to come with its own.
+
+         The slugs, labels, colours and order are the server's own seed,
+         copied. That is the point — sessions are filed by slug, so a phone
+         that later signs in has to already agree about what `deep` means
+         rather than arrive with five categories of its own invention.
+
+         Skipped when the table has anything in it, so an install that has
+         already synced is left alone.
+         */
+        migrator.registerMigration("seedDefaultCategories") { db in
+            guard try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM category") == 0 else { return }
+
+            let defaults: [(String, String, String, Bool)] = [
+                ("deep", "Deep Work", "#BE6E45", true),
+                ("writing", "Writing", "#6E86B0", false),
+                ("study", "Study", "#7E9476", false),
+                ("reading", "Reading", "#C8943A", false),
+                ("design", "Design", "#9B6F8C", false),
+            ]
+
+            for (order, row) in defaults.enumerated() {
+                let (name, label, color, isDefault) = row
+                try db.execute(
+                    sql: """
+                    INSERT INTO category (id, name, label, color, sortOrder, isDefault, updatedAt, deletedAt, dirty)
+                    VALUES (?, ?, ?, ?, ?, ?, 0, NULL, 0)
+                    """,
+                    // Not dirty, and never pushed: these are this phone's
+                    // starting point, not an edit anybody made. A server that
+                    // has its own `deep` wins on the next pull.
+                    arguments: [UUID().uuidString, name, label, color, order, isDefault]
+                )
+            }
+        }
+
         return migrator
     }
 }

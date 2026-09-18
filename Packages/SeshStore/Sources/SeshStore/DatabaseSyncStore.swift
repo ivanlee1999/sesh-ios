@@ -142,6 +142,20 @@ public final class DatabaseSyncStore: SyncStore, @unchecked Sendable {
                     if let previous = local, previous.name != remote.name {
                         try Self.repointCategory(db, from: previous.name, to: remote.name)
                     }
+                    /*
+                     The same slug under a different id. That is what a phone
+                     seeded with the default categories looks like the first
+                     time it meets a server that seeded its own: both have a
+                     `deep`, neither has the other's id, and `name` is unique,
+                     so saving would fail the constraint and take the whole
+                     page down with it. The server's copy is the one that
+                     matters — sessions are filed by slug, so dropping the
+                     local row detaches nothing.
+                     */
+                    try db.execute(
+                        sql: "DELETE FROM category WHERE name = ? AND id <> ?",
+                        arguments: [remote.name, remote.id]
+                    )
                     try CategoryRecord(remote: remote).save(db)
                 }
             }

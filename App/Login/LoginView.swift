@@ -2,7 +2,11 @@ import SwiftUI
 import SeshCore
 
 /**
- The way in.
+ Not the way in — an optional extra, reached from Settings.
+
+ The app is standalone and never asks for this; what signing in buys is the
+ same sessions on a laptop, and nothing else. So the screen is always a sheet
+ that can be waved away, and it says plainly what is and is not at stake.
 
  The server address is editable because this app is one person's, pointed at
  their own server — there is no hosted sesh to assume. The password is traded
@@ -10,20 +14,9 @@ import SeshCore
  renews itself long before it expires.
  */
 struct LoginView: View {
-    /**
-     Offered when this screen is the only thing on screen, on a fresh install.
-
-     Without it the promise two lines further down — that sessions stay on this
-     phone either way — is not keepable: signing in would be the one way past a
-     screen you reach before you own a single session, so a server that is
-     down, unreachable, or simply not yours yet locks you out of a timer that
-     never needed it. Nil when the screen is a sheet, which can already be
-     dismissed.
-     */
-    var onDefer: (() -> Void)?
-
     @Environment(AppModel.self) private var model
     @Environment(\.theme) private var theme
+    @Environment(\.dismiss) private var dismiss
 
     @State private var server = DeviceDefaults.serverURL
     @State private var username = ""
@@ -87,13 +80,11 @@ struct LoginView: View {
                         .foregroundStyle(theme.palette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    if let onDefer {
-                        Button("Start without a server") { onDefer() }
-                            .font(Typeface.font(15, .semibold))
-                            .buttonStyle(.plain)
-                            .foregroundStyle(theme.accent)
-                            .padding(.top, 2)
-                    }
+                    Button("Not now") { dismiss() }
+                        .font(Typeface.font(15, .semibold))
+                        .buttonStyle(.plain)
+                        .foregroundStyle(theme.accent)
+                        .padding(.top, 2)
                 }
                 .padding(24)
             }
@@ -123,7 +114,12 @@ struct LoginView: View {
         DeviceDefaults.serverURL = trimmed
 
         error = await model.signIn(username: username, password: password)
-        if error == nil { password = "" }
+        if error == nil {
+            password = ""
+            // Nothing behind this screen was waiting on it, so there is
+            // nowhere to land — it just goes away.
+            dismiss()
+        }
     }
 }
 

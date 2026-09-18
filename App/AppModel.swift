@@ -33,6 +33,18 @@ final class AppModel {
     private(set) var remoteTimer: RemoteTimer?
 
     var authState: AuthState = .unknown
+
+    /**
+     Whether this phone is meant to be signed in at all — see
+     `DeviceDefaults.expectsSignIn`. Mirrored here so the screens can observe
+     it; `UserDefaults` on its own would go stale until something else redrew.
+
+     Signing in is an extra this app can do, not a step on the way in, so
+     everything reads `authState == .signedOut && expectsSignIn` before saying
+     a word about it.
+     */
+    private(set) var expectsSignIn = DeviceDefaults.expectsSignIn
+
     private(set) var syncStatus = SyncStatus()
     private(set) var taskSources: [TaskSourceState] = []
 
@@ -118,6 +130,7 @@ final class AppModel {
         deviceId = (try? store.deviceId()) ?? UUID().uuidString
         let signedIn = await tokens.isSignedIn
         authState = signedIn ? .signedIn : .signedOut
+        expectsSignIn = DeviceDefaults.expectsSignIn
         reload()
         restoreTimer()
         if authState == .signedIn { sync() }
@@ -157,6 +170,9 @@ final class AppModel {
         do {
             _ = try await client.signIn(username: username, password: password)
             authState = .signedIn
+            // From here on, being signed out is worth mentioning.
+            DeviceDefaults.expectsSignIn = true
+            expectsSignIn = true
             sync()
             return nil
         } catch APIError.unauthorized {
@@ -168,9 +184,18 @@ final class AppModel {
         }
     }
 
+    /**
+     Sign out on purpose, which returns this phone to being a standalone app.
+
+     The expectation goes with it: leaving deliberately is not the same as a
+     session lapsing underneath you, and only the second is worth a banner.
+     Nothing local is touched — the sessions were never the server's.
+     */
     func signOut() async {
         await tokens.clear()
         authState = .signedOut
+        DeviceDefaults.expectsSignIn = false
+        expectsSignIn = false
     }
 
     // ── Sync ────────────────────────────────────────────────────────────
@@ -482,10 +507,20 @@ final class AppModel {
         sync()
     }
 
-    func saveCategory(id: String?, label: String, color: String) {
-        _ = try? repository.saveCategory(id: id, label: label, color: color)
+    /// Returns why it was refused, so the sheet can say so rather than
+    /// appearing to ignore what was typed.
+    @discardableResult
+    func saveCategory(id: String?, label: String, color: String) -> String? {
+        do {
+            _ = try repository.saveCategory(id: id, label: label, color: color)
+        } catch let refusal as SeshRepository.CategoryNameTaken {
+            return "\(refusal.label) already uses that name."
+        } catch {
+            return nil
+        }
         reload()
         sync()
+        return nil
     }
 
     /// Returns the number of sessions standing behind it when the delete is

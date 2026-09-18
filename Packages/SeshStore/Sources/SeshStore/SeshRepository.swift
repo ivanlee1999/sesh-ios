@@ -225,10 +225,33 @@ public final class SeshRepository: Sendable {
     public func saveCategory(id: String? = nil, label: String, color: String) throws -> CategoryRecord {
         let stamp = now()
         let categoryId = id ?? UUID().uuidString
-        let slug = Self.slugify(label)
 
         return try writer.write { db in
             let existing = try CategoryRecord.fetchOne(db, key: categoryId)
+
+            /*
+             The slug follows the label only when the label actually changed.
+
+             Deriving it unconditionally re-slugs a category that nobody
+             renamed: the server's `deep` is labelled "Deep Work", so picking a
+             new colour for it would quietly refile it — and every session
+             under it — as `deep-work`, disagreeing with the server about the
+             one value they join on. A slug is a name a row was given, not a
+             function of its current label.
+             */
+            let slug: String = {
+                guard let existing else { return Self.slugify(label) }
+                return existing.label == label ? existing.name : Self.slugify(label)
+            }()
+
+            // Checked in the same transaction as the write, for the same
+            // reason the in-use count is: the constraint is the database's,
+            // so the answer has to come from there too.
+            if let clash = try CategoryRecord.filter(Column("name") == slug).fetchOne(db),
+               clash.id != categoryId {
+                throw CategoryNameTaken(label: clash.label)
+            }
+
             let order = try existing?.sortOrder
                 ?? ((try Int.fetchOne(db, sql: "SELECT MAX(sortOrder) FROM category") ?? -1) + 1)
 
@@ -269,6 +292,18 @@ public final class SeshRepository: Sendable {
     /// and would lose their name and colour.
     public struct CategoryInUse: Error {
         public let sessionCount: Int
+    }
+
+    /**
+     Refused because another category already answers to that slug.
+
+     `name` is unique, so without this the insert fails as a raw SQLite
+     constraint error — which the call site swallowed, leaving someone typing
+     a name that silently does nothing. The server refuses the same case in
+     the same words.
+     */
+    public struct CategoryNameTaken: Error {
+        public let label: String
     }
 
     /**

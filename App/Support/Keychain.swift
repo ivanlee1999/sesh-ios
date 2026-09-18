@@ -105,7 +105,7 @@ enum DeviceDefaults {
     enum Key: String {
         case serverURL = "sesh.serverURL"
         case onboarded = "sesh.onboarded"
-        case deferredSignIn = "sesh.deferredSignIn"
+        case expectsSignIn = "sesh.expectsSignIn"
         case calendarView = "sesh.calendarView"
         case categoryRecency = "sesh.categoryRecency"
         case pomodoroCycle = "sesh.pomodoroCycle"
@@ -121,14 +121,22 @@ enum DeviceDefaults {
         set { store.set(newValue, forKey: Key.onboarded.rawValue) }
     }
 
-    /// Whether the person chose to get on with it without a server.
-    ///
-    /// Remembered rather than held in view state, because otherwise the next
-    /// launch asks again — and until a session exists there is still nothing
-    /// to show behind the question.
-    static var deferredSignIn: Bool {
-        get { store.bool(forKey: Key.deferredSignIn.rawValue) }
-        set { store.set(newValue, forKey: Key.deferredSignIn.rawValue) }
+    /**
+     Whether this phone is meant to be signed in to a server at all.
+
+     False by default, and that is the whole point: a fresh install is a
+     standalone app, not a signed-out one. Nothing is hidden behind an account,
+     nothing asks for one, and no banner nags about a server the person never
+     said they had.
+
+     It turns true only when somebody actually signs in, and false again when
+     they sign out on purpose. So being signed out while this is true means the
+     one case worth reporting — a session that lapsed on its own, with syncing
+     quietly stopped — rather than the ordinary state of never having started.
+     */
+    static var expectsSignIn: Bool {
+        get { store.bool(forKey: Key.expectsSignIn.rawValue) }
+        set { store.set(newValue, forKey: Key.expectsSignIn.rawValue) }
     }
 
     static var calendarView: String {

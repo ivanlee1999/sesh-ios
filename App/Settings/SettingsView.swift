@@ -19,6 +19,7 @@ struct SettingsView: View {
     @State private var showingGoogle = false
     @State private var notificationsAllowed = false
     @State private var exportURL: URL?
+    @State private var showingSignIn = false
 
     var body: some View {
         List {
@@ -36,6 +37,7 @@ struct SettingsView: View {
         .sheet(isPresented: $showingCategories) { CategoriesSheet() }
         .sheet(isPresented: $showingThings) { ThingsSheet() }
         .sheet(isPresented: $showingGoogle) { GoogleConnectSheet() }
+        .sheet(isPresented: $showingSignIn) { LoginView().environment(model) }
         .task { notificationsAllowed = await TimerNotifications.authorizationStatus() == .authorized }
     }
 
@@ -190,8 +192,28 @@ struct SettingsView: View {
 
     // ── Sync ────────────────────────────────────────────────────────────
 
+    @ViewBuilder
     private var syncSection: some View {
-        Section("Sync") {
+        if model.authState != .signedIn {
+            // Standalone is a finished state, not a half-configured one, so it
+            // reads as a fact rather than as something left undone.
+            Section {
+                Button("Sign in to a server") { showingSignIn = true }
+                    .foregroundStyle(theme.accent)
+            } header: {
+                Text("Sync")
+            } footer: {
+                Text("This phone keeps everything itself, and works with no account at all. Sign in only if you want the same sessions on another device.")
+                    .metaStyle()
+                    .foregroundStyle(theme.palette.textTertiary)
+            }
+        } else {
+            signedInSyncSection
+        }
+    }
+
+    private var signedInSyncSection: some View {
+        Section {
             HStack {
                 Text("Waiting to send").rowTitleStyle()
                 Spacer()
@@ -218,6 +240,17 @@ struct SettingsView: View {
             }
             .foregroundStyle(theme.accent)
             .disabled(model.syncStatus.isRunning)
+
+            // Here rather than under About, next to the thing it undoes.
+            Button("Sign out", role: .destructive) {
+                Task { await model.signOut() }
+            }
+        } header: {
+            Text("Sync")
+        } footer: {
+            Text("Signing out leaves everything on this phone; it only stops it reaching your other devices.")
+                .metaStyle()
+                .foregroundStyle(theme.palette.textTertiary)
         }
     }
 
@@ -245,13 +278,14 @@ struct SettingsView: View {
                     .foregroundStyle(theme.accent)
             }
 
-            Button("Sign out", role: .destructive) {
-                Task { await model.signOut() }
-            }
         } footer: {
-            Text("Server: \(DeviceDefaults.serverURL)")
-                .metaStyle()
-                .foregroundStyle(theme.palette.textTertiary)
+            // Only worth naming once there is one; otherwise it advertises a
+            // requirement the app does not have.
+            if model.authState == .signedIn {
+                Text("Server: \(DeviceDefaults.serverURL)")
+                    .metaStyle()
+                    .foregroundStyle(theme.palette.textTertiary)
+            }
         }
     }
 
@@ -304,7 +338,7 @@ struct CategoriesSheet: View {
         NavigationStack {
             List {
                 ForEach(model.categories) { category in
-                    CategoryEditorRow(category: category)
+                    CategoryEditorRow(category: category, refusal: $refusal)
                 }
                 .onDelete { offsets in
                     for index in offsets {
@@ -323,8 +357,15 @@ struct CategoriesSheet: View {
                             .textFieldStyle(.plain)
                         Button("Add") {
                             guard !newLabel.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-                            model.saveCategory(id: nil, label: newLabel, color: Swatches.all.randomElement() ?? "#c0522d")
-                            newLabel = ""
+                            if let refused = model.saveCategory(
+                                id: nil,
+                                label: newLabel,
+                                color: Swatches.all.randomElement() ?? "#c0522d"
+                            ) {
+                                refusal = refused
+                            } else {
+                                newLabel = ""
+                            }
                         }
                         .foregroundStyle(theme.accent)
                     }
@@ -335,7 +376,7 @@ struct CategoriesSheet: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
-            .alert("Still in use", isPresented: Binding(get: { refusal != nil }, set: { if !$0 { refusal = nil } })) {
+            .alert("Not changed", isPresented: Binding(get: { refusal != nil }, set: { if !$0 { refusal = nil } })) {
                 Button("OK", role: .cancel) { refusal = nil }
             } message: {
                 Text(refusal ?? "")
@@ -346,6 +387,7 @@ struct CategoriesSheet: View {
 
 private struct CategoryEditorRow: View {
     let category: CategoryRecord
+    @Binding var refusal: String?
     @Environment(AppModel.self) private var model
     @Environment(\.theme) private var theme
     @State private var label: String = ""
@@ -355,12 +397,16 @@ private struct CategoryEditorRow: View {
             TextField("Label", text: $label)
                 .textFieldStyle(.plain)
                 .onAppear { label = category.label }
-                .onSubmit { model.saveCategory(id: category.id, label: label, color: category.color) }
+                .onSubmit { refusal = model.saveCategory(id: category.id, label: label, color: category.color) }
 
             HStack(spacing: 8) {
                 ForEach(Swatches.all, id: \.self) { swatch in
                     Button {
-                        model.saveCategory(id: category.id, label: label.isEmpty ? category.label : label, color: swatch)
+                        refusal = model.saveCategory(
+                            id: category.id,
+                            label: label.isEmpty ? category.label : label,
+                            color: swatch
+                        )
                     } label: {
                         Circle()
                             .fill(Color(hex: swatch))
