@@ -53,6 +53,11 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: sesh
+        # From the build settings rather than baked in, which xcodegen otherwise
+        # does — so `CURRENT_PROJECT_VERSION=…` on the command line can give each
+        # TestFlight upload the unique build number it has to have.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         NSSupportsLiveActivities: true
         UIBackgroundModes: [fetch, processing]
@@ -78,5 +83,8 @@ targets:
       path: SeshWidgets/Info.plist
       properties:
         CFBundleDisplayName: sesh
+        # Must match the app's, or the upload is refused.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
