@@ -49,7 +49,9 @@ final class AppModel {
     private(set) var taskSources: [TaskSourceState] = []
 
     /// The finished session awaiting a rating; the poster is up while this is set.
-    var reflecting: Session?
+    var reflecting: Session? { timer.reflection }
+    private(set) var reflectionError: String?
+    private(set) var savingReflection = false
     var selectedTab: Tab = .focus
     var banner: String?
 
@@ -372,65 +374,113 @@ final class AppModel {
      target, because the two credit different amounts — see `TimerState`.
      */
     func finish(manual: Bool) {
-        guard let draft = timer.draftSession(now: nowMs(), manual: manual) else { return }
-        let wasFocus = timer.kind.isFocus
-
-        Task { await liveActivity.end() }
-        Haptics.success()
-        Task { await Chime.shared.play(focus: wasFocus, enabled: settings.soundEnabled) }
-
-        if wasFocus {
-            try? repository.save(draft)
-
-            var cycle = DeviceDefaults.pomodoroCycle
-            let key = DayKey.key(for: Date())
-            let count = cycle.increment(on: key)
-            DeviceDefaults.pomodoroCycle = cycle
-            let longBreak = cycle.isLongBreakDue(after: count, every: settings.sessionsBeforeLongBreak)
-
-            if settings.autoStartBreak {
-                // The poster floats over a break that has already begun, so no
-                // time is lost deciding whether to take one.
-                reflecting = draft
-                start(kind: .rest, longBreak: longBreak)
-            } else {
-                reflecting = draft
-                var next = timer
-                next.abandon()
-                commit(next)
-            }
-        } else {
-            var next = timer
-            next.abandon()
-            commit(next)
-            if settings.autoStartFocus {
-                start(kind: .focus)
-            }
+        guard timer.isActive, reflecting == nil else { return }
+        if !timer.kind.isFocus {
+            abandon()
+            if settings.autoStartFocus { start(kind: .focus) }
+            return
         }
 
-        reload()
-        sync()
+        var next = timer
+        let count = sessions.filter {
+            $0.type.isFocus && DayKey.key(for: Date(timeIntervalSince1970: Double($0.startedAt) / 1000)) == DayKey.key(for: Date())
+        }.count + 1
+        let longBreak = count % max(1, settings.sessionsBeforeLongBreak) == 0
+        let breakTarget = settings.autoStartBreak
+            ? settings.duration(for: .rest, longBreak: longBreak) * 60_000 : nil
+        next.beginReflection(now: nowMs(), manual: manual, breakTargetMs: breakTarget)
+        guard next.reflection != nil else { return }
+        reflectionError = nil
+        let frozen = next
+        do {
+            // Starting a break must not complete the draft: task credit uses the
+            // final links chosen on the reflection screen, at Save time only.
+            try repository.saveTimer(next, deviceId: deviceId)
+            timer = next
+            applyWakeLock()
+            reload()
+            sync()
+            Task {
+                await liveActivity.end()
+                await TimerNotifications.reschedule(for: next, settings: settings, now: nowMs())
+                if next.isActive { liveActivity.start(state: next, accentHex: accentHex, now: nowMs()) }
+                await Chime.shared.play(focus: true, enabled: settings.soundEnabled)
+            }
+            Haptics.success()
+        } catch {
+            // Keep the freeze and draft visible so a storage error cannot eat notes.
+            timer = frozen
+            reflectionError = "Could not save on this phone. Your reflection is still here — try Save again."
+        }
     }
 
-    /// The rating, given after the fact. Re-saves the same session.
-    func rate(_ session: Session, rating: Int) {
-        try? repository.updateSession(id: session.id, rating: rating)
-        reflecting = nil
-        reload()
-        sync()
+    func editReflection(intention: String? = nil, notes: String? = nil, rating: Int? = nil,
+                        taskRefs: [String]? = nil) {
+        guard var draft = reflecting else { return }
+        if let intention { draft.intention = intention }
+        if let notes { draft.notes = notes }
+        if let rating { draft.rating = max(0, min(5, rating)) }
+        if let taskRefs {
+            draft.todoistTaskId = TaskRef.encodeList(taskRefs)
+            let linked = tasks.filter { taskRefs.contains($0.ref.encoded) }
+            if !linked.isEmpty {
+                draft.intention = linked.map(\.content).joined(separator: " · ")
+                if let category = linked.first?.category,
+                   let match = categories.first(where: { $0.name == category || $0.label.caseInsensitiveCompare(category) == .orderedSame }) {
+                    draft.category = match.name
+                }
+            }
+        }
+        var next = timer
+        next.reflection = draft
+        timer = next
+        do {
+            try repository.saveTimer(next, deviceId: deviceId, mirror: false)
+            reflectionError = nil
+        } catch {
+            reflectionError = "Could not keep this edit on disk. Your notes are still here — retry Save."
+        }
     }
 
-    func editReflecting(intention: String) {
-        guard var session = reflecting else { return }
-        session.intention = intention
-        reflecting = session
-        try? repository.updateSession(id: session.id, intention: intention)
-        reload()
-        sync()
+    /// A synchronous transaction guards rapid taps; sync retries use the same session ID.
+    @discardableResult
+    func saveReflection() -> Bool {
+        guard let draft = reflecting, !savingReflection else { return false }
+        savingReflection = true
+        defer { savingReflection = false }
+        var next = timer
+        next.reflection = nil
+        if next.phase == .reflect { next.abandon() }
+        do {
+            // If a draft edit could not persist, save it first; finalization still
+            // checks the durable ID before committing history and clearing the timer.
+            try repository.saveTimer(timer, deviceId: deviceId, mirror: false)
+            guard try repository.save(draft, replacingTimer: next, deviceId: deviceId, requiringReflection: true) else { return false }
+            timer = next
+            reflectionError = nil
+            applyWakeLock()
+            reload()
+            sync()
+            return true
+        } catch {
+            reflectionError = "Could not save on this phone. Your notes are still here — try again."
+            return false
+        }
     }
 
-    func dismissPoster() {
-        reflecting = nil
+    func returnToPausedSession() {
+        guard timer.phase == .reflect else { return }
+        var next = timer
+        next.returnFromReflection()
+        do {
+            try repository.saveTimer(next, deviceId: deviceId)
+            timer = next
+            reflectionError = nil
+            applyWakeLock()
+            sync()
+        } catch {
+            reflectionError = "Could not return to the session. Your reflection is still here."
+        }
     }
 
     /// Adopt a timer that is running on another device, having been asked to.

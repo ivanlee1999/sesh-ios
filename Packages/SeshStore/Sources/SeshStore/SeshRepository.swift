@@ -92,6 +92,30 @@ public final class SeshRepository: Sendable {
         return session
     }
 
+    /// History, its single completion operation, and timer transition commit together.
+    /// Retrying a final Save after success cannot enqueue a second completion.
+    @discardableResult
+    public func save(_ session: Session, replacingTimer state: TimerState,
+                     deviceId: String, requiringReflection: Bool = false) throws -> Bool {
+        let stamp = now()
+        let encoded = String(decoding: try JSONEncoder().encode(state), as: UTF8.self)
+        return try writer.write { db in
+            if requiringReflection {
+                guard let row = try TimerRecord.fetchOne(db, key: 1),
+                      let data = row.state.data(using: .utf8),
+                      let persisted = try? JSONDecoder().decode(TimerState.self, from: data),
+                      persisted.reflection?.id == session.id else { return false }
+            }
+            let existing = try SessionRecord.fetchOne(db, key: session.id)
+            try SessionRecord(session: session, updatedAt: stamp, dirty: true).save(db)
+            let kind: SyncOpKind = existing == nil ? .sessionComplete : .sessionUpsert
+            try enqueue(db, op: SyncOp(kind: kind, payload: Self.payload(for: session, updatedAt: stamp, full: kind == .sessionComplete)))
+            try TimerRecord(id: 1, state: encoded, updatedAt: stamp).save(db)
+            try enqueue(db, op: SyncOp(kind: .timerMirror, payload: state.mirrorPayload(now: stamp, deviceId: deviceId)), coalesceKey: "timer")
+            return true
+        }
+    }
+
     public func updateSession(
         id: String,
         intention: String? = nil,

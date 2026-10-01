@@ -120,6 +120,8 @@ struct FocusView: View {
                     }
                 }
                 .padding(20)
+                .frame(maxWidth: 560)
+                .frame(maxWidth: .infinity)
             }
         }
     }
@@ -164,8 +166,10 @@ struct FocusView: View {
             let now = Millis(context.date.timeIntervalSince1970 * 1000)
             let remaining = model.timer.remainingMs(now: now)
 
-            VStack(spacing: 18) {
-                Spacer(minLength: 0)
+            ScrollView {
+            VStack(spacing: 22) {
+                Text(model.category(named: model.timer.category)?.label ?? model.timer.category)
+                    .eyebrowStyle().foregroundStyle(theme.accent)
 
                 Eyebrow(text: eyebrow(remaining: remaining))
 
@@ -210,7 +214,11 @@ struct FocusView: View {
                     .seshButton(.quiet, size: 40)
                     .padding(.bottom, 4)
             }
-            .padding(20)
+            .padding(24)
+            .frame(maxWidth: 560)
+            .frame(maxWidth: .infinity)
+            }
+            .scrollDismissesKeyboard(.interactively)
             .onChange(of: remaining <= 0) { wasOver, isOver in
                 // The chime belongs to the moment of crossing, not to every
                 // second after it — and a session restored already overdue

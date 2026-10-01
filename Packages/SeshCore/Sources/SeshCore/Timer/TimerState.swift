@@ -33,6 +33,10 @@ public struct TimerState: Equatable, Sendable, Codable {
     /// Time already spent paused, excluding any pause currently open.
     public var pausedTotalMs: Int
     public var taskRefs: String?
+    /// Durable finish edits. A running break may carry the preceding focus draft.
+    public var reflection: Session?
+    /// Edits kept when returning to the same paused sitting, hidden until Finish.
+    public var retainedReflection: Session?
 
     public init(
         phase: Phase = .idle,
@@ -43,7 +47,9 @@ public struct TimerState: Equatable, Sendable, Codable {
         startedAt: Millis? = nil,
         pausedAt: Millis? = nil,
         pausedTotalMs: Int = 0,
-        taskRefs: String? = nil
+        taskRefs: String? = nil,
+        reflection: Session? = nil,
+        retainedReflection: Session? = nil
     ) {
         self.phase = phase
         self.kind = kind
@@ -54,6 +60,8 @@ public struct TimerState: Equatable, Sendable, Codable {
         self.pausedAt = pausedAt
         self.pausedTotalMs = pausedTotalMs
         self.taskRefs = taskRefs
+        self.reflection = reflection
+        self.retainedReflection = retainedReflection
     }
 
     public static let idle = TimerState()
@@ -128,6 +136,7 @@ public struct TimerState: Equatable, Sendable, Codable {
      you started against. Losing the link is the honest outcome.
      */
     public mutating func changeTopic(_ topic: String) {
+        guard topic != intention else { return }
         intention = topic
         taskRefs = nil
     }
@@ -156,7 +165,8 @@ public struct TimerState: Equatable, Sendable, Codable {
      */
     public func draftSession(now: Millis, manual: Bool) -> Session? {
         guard let startedAt, isActive else { return nil }
-        let span = Int(now - startedAt)
+        let boundary = pausedAt ?? now
+        let span = Int(boundary - startedAt)
         let actualMs = manual ? max(60_000, span) : max(targetMs, span)
         return Session(
             id: Session.id(startedAt: startedAt),
@@ -167,11 +177,41 @@ public struct TimerState: Equatable, Sendable, Codable {
             actualMs: actualMs,
             overflowMs: max(0, actualMs - targetMs),
             startedAt: startedAt,
-            endedAt: now,
+            endedAt: boundary,
             notes: "",
             rating: 0,
             todoistTaskId: taskRefs
         )
+    }
+
+    /// Freeze the finish boundary before the person spends time reflecting.
+    public mutating func beginReflection(now: Millis, manual: Bool, breakTargetMs: Int? = nil) {
+        guard isActive, reflection == nil else { return }
+        pause(now: now)
+        guard var draft = draftSession(now: now, manual: manual) else { return }
+        if let retainedReflection, retainedReflection.id == draft.id {
+            draft.notes = retainedReflection.notes
+            draft.rating = retainedReflection.rating
+        }
+        retainedReflection = nil
+        reflection = draft
+        phase = .reflect
+        if let breakTargetMs {
+            start(kind: .rest, intention: "", category: draft.category,
+                  targetMs: breakTargetMs, now: now)
+            reflection = draft
+        }
+    }
+
+    /// Return to the same paused sitting without creating history or task writes.
+    public mutating func returnFromReflection() {
+        guard phase == .reflect, let draft = reflection else { return }
+        intention = draft.intention
+        category = draft.category
+        taskRefs = draft.todoistTaskId
+        retainedReflection = draft
+        reflection = nil
+        phase = .paused
     }
 
     // ── Mirroring to the server ─────────────────────────────────────────
@@ -192,9 +232,8 @@ public struct TimerState: Equatable, Sendable, Codable {
     public func mirrorPayload(now: Millis, deviceId: String) -> [String: JSONValue] {
         let remaining = remainingMs(now: now)
         return [
-            // The poster is this app's own state; to every other device the
-            // timer has simply stopped.
-            "phase": .string(phase == .reflect ? "idle" : phase.rawValue),
+            // Reflection holds the timer paused on existing backends.
+            "phase": .string(phase == .reflect ? "paused" : phase.rawValue),
             "sessionType": .string(kind.rawValue),
             "intention": .string(intention),
             "category": .string(category),

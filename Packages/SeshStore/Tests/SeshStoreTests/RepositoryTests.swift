@@ -43,7 +43,7 @@ final class RepositoryTests: XCTestCase {
     }
 
     func testSavingAgainIsAnEditRatherThanASecondSitting() throws {
-        // The poster saves once to start the break, then again when a rating is given.
+        // Editing an already saved session must not credit its time twice.
         try repository.save(session())
         try repository.save(session())
 
@@ -197,4 +197,116 @@ final class RepositoryTests: XCTestCase {
         let titles = try repository.cachedTasks().map(\.content).sorted()
         XCTAssertEqual(titles, ["Buy milk", "Something else"])
     }
+    func testReflectionCompletionIsAtomicAndExactlyOnce() throws {
+        var timer = TimerState()
+        timer.start(kind: .focus, intention: "Plan", category: "deep", targetMs: 1_500_000, now: now)
+        timer.beginReflection(now: now + 120_000, manual: true)
+        timer.reflection?.notes = "Next step"
+        timer.reflection?.rating = 5
+        timer.reflection?.todoistTaskId = "things:one"
+        try repository.saveTimer(timer, deviceId: "iphone", mirror: false)
+        XCTAssertEqual(try repository.loadTimer(), timer)
+        let draft = try XCTUnwrap(timer.reflection)
+        var cleared = timer
+        cleared.abandon()
+        XCTAssertTrue(try repository.save(draft, replacingTimer: cleared, deviceId: "iphone", requiringReflection: true))
+        XCTAssertFalse(try repository.save(draft, replacingTimer: cleared, deviceId: "iphone", requiringReflection: true))
+        XCTAssertEqual(try outbox().filter { $0.kind == SyncOpKind.sessionComplete.rawValue }.count, 1)
+        let stored = try XCTUnwrap(try database.writer.read { try SessionRecord.fetchOne($0, key: draft.id) })
+        XCTAssertEqual(stored.notes, "Next step")
+        XCTAssertEqual(stored.rating, 5)
+        XCTAssertEqual(stored.taskRefs, "things:one")
+        XCTAssertNil(try repository.loadTimer().reflection)
+    }
+
+    func testCompletionWaitsForFinalTaskSelectionWithEitherBreakSetting() throws {
+        for autoStartBreak in [false, true] {
+            let db = try AppDatabase.inMemory()
+            let store = SeshRepository(database: db, clock: { [now] in now })
+            var timer = TimerState()
+            timer.start(kind: .focus, intention: "Old task", category: "deep",
+                        targetMs: 1_500_000, taskRefs: "things:old", now: now)
+            timer.beginReflection(now: now + 120_000, manual: true,
+                                  breakTargetMs: autoStartBreak ? 300_000 : nil)
+            try store.saveTimer(timer, deviceId: "iphone")
+            XCTAssertEqual(try store.sessions().count, 0)
+            XCTAssertEqual(try db.writer.read { try OutboxRecordRow.fetchAll($0).map(\.kind) },
+                           [SyncOpKind.timerMirror.rawValue])
+            timer.reflection?.notes = "Final note"
+            timer.reflection?.rating = 5
+            timer.reflection?.todoistTaskId = "things:new,123"
+            try store.saveTimer(timer, deviceId: "iphone", mirror: false)
+            timer = try store.loadTimer()
+            let draft = try XCTUnwrap(timer.reflection)
+            var next = timer
+            next.reflection = nil
+            if next.phase == .reflect { next.abandon() }
+            XCTAssertTrue(try store.save(draft, replacingTimer: next, deviceId: "iphone", requiringReflection: true))
+            XCTAssertFalse(try store.save(draft, replacingTimer: next, deviceId: "iphone", requiringReflection: true))
+            let complete = try db.writer.read {
+                try OutboxRecordRow.filter(Column("kind") == SyncOpKind.sessionComplete.rawValue).fetchAll($0)
+            }
+            XCTAssertEqual(complete.count, 1)
+            let payload = try JSONDecoder().decode(SyncOp.self, from: Data(try XCTUnwrap(complete.first).payload.utf8)).payload
+            XCTAssertEqual(payload["todoistTaskId"]?.stringValue, "things:new,123")
+            XCTAssertEqual(payload["notes"]?.stringValue, "Final note")
+            XCTAssertEqual(try store.sessions().first?.rating, 5)
+            XCTAssertEqual(try store.loadTimer().phase, autoStartBreak ? .running : .idle)
+            XCTAssertNil(try store.loadTimer().reflection)
+        }
+    }
+
+    func testFailedFinalSaveRollsBackAndCanRetry() throws {
+        var timer = TimerState()
+        timer.start(kind: .focus, intention: "Plan", category: "deep", targetMs: 1_500_000, now: now)
+        timer.beginReflection(now: now + 120_000, manual: true)
+        timer.reflection?.notes = "Do not lose me"
+        try repository.saveTimer(timer, deviceId: "iphone", mirror: false)
+        let draft = try XCTUnwrap(timer.reflection)
+        try database.writer.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER failCompletion BEFORE INSERT ON outboxItem
+                WHEN NEW.kind = 'session.complete'
+                BEGIN SELECT RAISE(ABORT, 'Simulated disk failure'); END
+                """)
+        }
+        XCTAssertThrowsError(try repository.save(draft, replacingTimer: .idle, deviceId: "iphone", requiringReflection: true))
+        XCTAssertEqual(try repository.loadTimer().reflection?.notes, "Do not lose me")
+        XCTAssertTrue(try repository.sessions().isEmpty)
+        XCTAssertTrue(try outbox().isEmpty)
+        try database.writer.write { try $0.execute(sql: "DROP TRIGGER failCompletion") }
+        XCTAssertTrue(try repository.save(draft, replacingTimer: .idle, deviceId: "iphone", requiringReflection: true))
+        XCTAssertEqual(try repository.sessions().count, 1)
+        XCTAssertEqual(try outbox().filter { $0.kind == SyncOpKind.sessionComplete.rawValue }.count, 1)
+    }
+
+    func testReflectionAndBackDraftSurviveReopeningDiskDatabase() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var disk: AppDatabase? = try AppDatabase.onDisk(folder: folder)
+        var store: SeshRepository? = SeshRepository(database: try XCTUnwrap(disk))
+        var timer = TimerState()
+        timer.start(kind: .focus, intention: "Plan", category: "deep", targetMs: 1_500_000, now: now)
+        timer.beginReflection(now: now + 120_000, manual: true)
+        timer.reflection?.notes = "Survive relaunch"
+        timer.reflection?.rating = 3
+        try store?.saveTimer(timer, deviceId: "iphone", mirror: false)
+        store = nil
+        disk = nil
+        disk = try AppDatabase.onDisk(folder: folder)
+        store = SeshRepository(database: try XCTUnwrap(disk))
+        timer = try XCTUnwrap(store).loadTimer()
+        XCTAssertEqual(timer.reflection?.notes, "Survive relaunch")
+        timer.returnFromReflection()
+        try store?.saveTimer(timer, deviceId: "iphone", mirror: false)
+        store = nil
+        disk = nil
+        disk = try AppDatabase.onDisk(folder: folder)
+        store = SeshRepository(database: try XCTUnwrap(disk))
+        timer = try XCTUnwrap(store).loadTimer()
+        timer.beginReflection(now: now + 240_000, manual: true)
+        XCTAssertEqual(timer.reflection?.notes, "Survive relaunch")
+        XCTAssertEqual(timer.reflection?.rating, 3)
+    }
+
 }
