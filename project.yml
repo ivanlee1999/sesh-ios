@@ -64,6 +64,8 @@ targets:
         # Must match SeshApp.refreshTaskId, or the scheduler silently refuses it.
         BGTaskSchedulerPermittedIdentifiers: [us.liyifan.sesh.refresh]
         UIUserInterfaceStyle: Automatic
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         # HTTPS through URLSession and nothing else, which is exempt — saying so
         # here saves answering the export-compliance question on every build.
         ITSAppUsesNonExemptEncryption: false
