@@ -60,6 +60,8 @@ struct SeshLiveActivity: Widget {
     private func countdown(_ state: SeshActivityAttributes.ContentState) -> some View {
         if let paused = state.pausedRemaining {
             Text(Self.clock(paused))
+        } else if state.endDate <= Date() {
+            Text("Overtime")
         } else {
             Text(timerInterval: Date()...state.endDate, countsDown: true)
         }
@@ -96,6 +98,8 @@ private struct LockScreenView: View {
             Group {
                 if let paused = state.pausedRemaining {
                     Text(SeshLiveActivity.clock(paused))
+                } else if state.endDate <= Date() {
+                    Text("Overtime")
                 } else {
                     Text(timerInterval: Date()...state.endDate, countsDown: true)
                 }

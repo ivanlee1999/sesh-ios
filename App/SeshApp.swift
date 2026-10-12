@@ -42,6 +42,7 @@ struct SeshApp: App {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background { scheduleRefresh() }
+            if phase == .active { model.refreshWatch() }
         }
     }
 

@@ -110,6 +110,7 @@ final class AppModel {
     private let engine: SyncEngine
     private let store: DatabaseSyncStore
     private let liveActivity = LiveActivityController()
+    private let watchBridge = PhoneWatchBridge()
 
     private var deviceId: String = ""
     private var syncTask: Task<Void, Never>?
@@ -126,6 +127,12 @@ final class AppModel {
         self.store = store
         self.client = client
         self.engine = SyncEngine(store: store, transport: client)
+        // WatchConnectivity may wake iOS in the background before any view task.
+        // Install its delegate at app initialization, with durable identity/state.
+        self.deviceId = (try? repository.deviceId()) ?? UUID().uuidString
+        self.timer = (try? repository.loadTimer()) ?? .idle
+        self.settings = (try? repository.settings()) ?? .defaults
+        watchBridge.activate(model: self)
     }
 
     func start() async {
@@ -151,6 +158,7 @@ final class AppModel {
             syncStatus.lastError = state.lastError
         }
         taskSources = loadTaskSources()
+        watchBridge.publish()
     }
 
     private func loadTaskSources() -> [TaskSourceState] {
@@ -275,7 +283,8 @@ final class AppModel {
         timer = (try? repository.loadTimer()) ?? .idle
         if timer.isActive {
             Task {
-                await TimerNotifications.reschedule(for: timer, settings: settings, now: nowMs())
+                if (try? repository.watchSnapshot().alertsOnWatch) == true { await TimerNotifications.cancelAll() }
+                else { await TimerNotifications.reschedule(for: timer, settings: settings, now: nowMs()) }
                 liveActivity.update(state: timer, accentHex: accentHex, now: nowMs())
             }
         }
@@ -437,6 +446,7 @@ final class AppModel {
         do {
             try repository.saveTimer(next, deviceId: deviceId, mirror: false)
             reflectionError = nil
+            watchBridge.publish()
         } catch {
             reflectionError = "Could not keep this edit on disk. Your notes are still here — retry Save."
         }
@@ -477,6 +487,7 @@ final class AppModel {
             timer = next
             reflectionError = nil
             applyWakeLock()
+            watchBridge.publish()
             sync()
         } catch {
             reflectionError = "Could not return to the session. Your reflection is still here."
@@ -528,6 +539,7 @@ final class AppModel {
         timer = next
         try? repository.saveTimer(next, deviceId: deviceId, mirror: mirror)
         applyWakeLock()
+        watchBridge.publish()
         Task {
             await TimerNotifications.reschedule(for: next, settings: settings, now: nowMs())
             if next.isActive {
@@ -535,6 +547,23 @@ final class AppModel {
             }
         }
         if mirror { sync() }
+        watchBridge.publish()
+    }
+
+    func refreshWatch() { watchBridge.publish() }
+
+    func watchStateDidChange(_ snapshot: WatchSnapshot) {
+        timer = snapshot.timer
+        reflectionError = nil
+        reload()
+        applyWakeLock()
+        sync()
+        Task {
+            if snapshot.alertsOnWatch { await TimerNotifications.cancelAll() }
+            else { await TimerNotifications.reschedule(for: snapshot.timer, settings: settings, now: nowMs()) }
+            if snapshot.timer.isActive { liveActivity.update(state: snapshot.timer, accentHex: accentHex, now: nowMs()) }
+            else { await liveActivity.end() }
+        }
     }
 
     private func applyWakeLock() {

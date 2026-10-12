@@ -26,7 +26,7 @@ public final class SeshRepository: Sendable {
     public var writer: any DatabaseWriter { database.writer }
     public var reader: any DatabaseReader { database.writer }
 
-    private func now() -> Millis { clock() }
+    func now() -> Millis { clock() }
 
     // ── Queueing ────────────────────────────────────────────────────────
 

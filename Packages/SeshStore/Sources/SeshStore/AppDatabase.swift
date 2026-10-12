@@ -189,6 +189,19 @@ public final class AppDatabase: Sendable {
             }
         }
 
+        migrator.registerMigration("watchCompanion") { db in
+            try db.create(table: "watchRevision") { t in
+                t.primaryKey("id", .integer)
+                t.column("revision", .integer).notNull().defaults(to: 0)
+                t.column("alertsOnWatch", .boolean).notNull().defaults(to: false)
+                t.column("state", .text).notNull()
+            }
+            try db.create(table: "watchReceipt") { t in
+                t.primaryKey("id", .text)
+                t.column("revision", .integer).notNull()
+            }
+        }
+
         return migrator
     }
 }
