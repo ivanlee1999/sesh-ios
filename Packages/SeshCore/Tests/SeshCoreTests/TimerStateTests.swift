@@ -112,7 +112,8 @@ final class TimerStateTests: XCTestCase {
     func testAbandonLeavesNothingBehind() {
         var timer = running()
         timer.abandon()
-        XCTAssertEqual(timer, .idle)
+        XCTAssertTrue(timer.sameSessionState(as: .idle))
+        XCTAssertEqual(timer.controlSessionStart, t0, "The conditional stop must identify the sitting it retired.")
         XCTAssertNil(timer.startedAt)
     }
 
@@ -158,12 +159,12 @@ final class TimerStateTests: XCTestCase {
         XCTAssertEqual(timer.mirrorPayload(now: t0, deviceId: "iphone")["todoistTaskId"]?.stringValue, "things:abc,123")
     }
 
-    func testMirrorReportsTheReflectPosterAsIdle() {
+    func testMirrorReportsReflectionAsPaused() {
         // The poster is this app's own state; to every other device the timer
         // has simply stopped.
         var timer = running()
-        timer.phase = .reflect
-        XCTAssertEqual(timer.mirrorPayload(now: t0, deviceId: "iphone")["phase"]?.stringValue, "idle")
+        timer.beginReflection(now: t0 + 60_000, manual: true)
+        XCTAssertEqual(timer.mirrorPayload(now: t0, deviceId: "iphone")["phase"]?.stringValue, "paused")
     }
 
     func testMirrorEncodesAsTheServerExpects() throws {
@@ -192,4 +193,75 @@ final class TimerStateTests: XCTestCase {
         // The wire spells it "break"; Swift cannot.
         XCTAssertEqual(SessionKind.rest.rawValue, "break")
     }
+    func testReflectionFreezesAtPauseAndSurvivesDisk() throws {
+        var timer = TimerState()
+        timer.start(kind: .focus, intention: "Plan", category: "deep", targetMs: 1_500_000, now: t0)
+        timer.pause(now: t0 + 120_000)
+        timer.beginReflection(now: t0 + 900_000, manual: true)
+        XCTAssertEqual(timer.reflection?.endedAt, t0 + 120_000)
+        XCTAssertEqual(timer.reflection?.actualMs, 120_000)
+        let restored = try JSONDecoder().decode(TimerState.self, from: JSONEncoder().encode(timer))
+        XCTAssertEqual(restored, timer)
+        timer.beginReflection(now: t0 + 1_000_000, manual: true)
+        XCTAssertEqual(timer.reflection, restored.reflection)
+        timer.returnFromReflection()
+        XCTAssertEqual(timer.phase, .paused)
+        timer.resume(now: t0 + 1_200_000)
+        XCTAssertEqual(timer.elapsedMs(now: t0 + 1_260_000), 180_000)
+    }
+
+    func testUnchangedTopicKeepsTaskLinks() {
+        var timer = TimerState(intention: "Plan", taskRefs: "things:one")
+        timer.changeTopic("Plan")
+        XCTAssertEqual(timer.taskRefs, "things:one")
+    }
+
+    func testBackAndFinishRetainsEditsAndRecomputesTheBoundary() throws {
+        var timer = running()
+        timer.beginReflection(now: t0 + 120_000, manual: true)
+        timer.reflection?.notes = "Keep this thought"
+        timer.reflection?.rating = 3
+        timer.reflection?.intention = "Revised topic"
+        timer.reflection?.todoistTaskId = "things:new"
+        let id = timer.reflection?.id
+        timer.returnFromReflection()
+        XCTAssertNil(timer.reflection)
+        XCTAssertEqual(timer.phase, .paused)
+        timer = try JSONDecoder().decode(TimerState.self, from: JSONEncoder().encode(timer))
+        timer.resume(now: t0 + 180_000)
+        timer.beginReflection(now: t0 + 240_000, manual: true)
+        XCTAssertEqual(timer.reflection?.id, id)
+        XCTAssertEqual(timer.reflection?.notes, "Keep this thought")
+        XCTAssertEqual(timer.reflection?.rating, 3)
+        XCTAssertEqual(timer.reflection?.intention, "Revised topic")
+        XCTAssertEqual(timer.reflection?.todoistTaskId, "things:new")
+        XCTAssertEqual(timer.reflection?.endedAt, t0 + 240_000)
+        XCTAssertEqual(timer.elapsedMs(now: t0 + 600_000), 180_000)
+    }
+
+    func testAutoStartBreakKeepsFocusDraftWithoutExtendingItsTime() throws {
+        var timer = running()
+        timer.beginReflection(now: t0 + 120_000, manual: true, breakTargetMs: 300_000)
+        XCTAssertEqual(timer.phase, .running)
+        XCTAssertEqual(timer.kind, .rest)
+        XCTAssertEqual(timer.startedAt, t0 + 120_000)
+        XCTAssertEqual(timer.reflection?.type, .focus)
+        XCTAssertEqual(timer.reflection?.endedAt, t0 + 120_000)
+        timer.beginReflection(now: t0 + 180_000, manual: true)
+        XCTAssertEqual(timer.reflection?.actualMs, 120_000)
+        let restored = try JSONDecoder().decode(TimerState.self, from: JSONEncoder().encode(timer))
+        XCTAssertEqual(restored, timer)
+    }
+
+    func testBuildOneTimerDecodesWithoutDraftFields() throws {
+        let data = try JSONEncoder().encode(running())
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        json.removeValue(forKey: "reflection")
+        json.removeValue(forKey: "retainedReflection")
+        let restored = try JSONDecoder().decode(TimerState.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertNil(restored.reflection)
+        XCTAssertNil(restored.retainedReflection)
+        XCTAssertEqual(restored.phase, .running)
+    }
+
 }

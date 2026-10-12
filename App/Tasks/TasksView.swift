@@ -364,6 +364,7 @@ struct TaskRow: View {
 
 /// The same list, as a sheet, for picking what a session is against.
 struct TaskPickerSheet: View {
+    var forReflection = false
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.theme) private var theme
@@ -372,6 +373,10 @@ struct TaskPickerSheet: View {
     var body: some View {
         NavigationStack {
             List {
+                if model.tasks.isEmpty {
+                    Text("No cached tasks. Connect Things or Todoist in Settings, then sync to choose tasks.")
+                        .foregroundStyle(theme.palette.textSecondary)
+                }
                 ForEach(model.tasks) { task in
                     Button {
                         let key = task.ref.encoded
@@ -402,16 +407,19 @@ struct TaskPickerSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Link") {
                         let tasks = model.tasks.filter { chosen.contains($0.ref.encoded) }
-                        model.linkTasks(
-                            tasks.map { $0.ref.encoded },
-                            leadCategory: nil,
-                            title: tasks.isEmpty ? nil : tasks.map(\.content).joined(separator: " · ")
-                        )
+                        if forReflection {
+                            model.editReflection(taskRefs: chosen.sorted())
+                        } else {
+                            model.linkTasks(
+                                chosen.sorted(), leadCategory: nil,
+                                title: tasks.isEmpty ? nil : tasks.map(\.content).joined(separator: " · ")
+                            )
+                        }
                         dismiss()
                     }
                 }
             }
         }
-        .onAppear { chosen = Set(TaskRef.split(model.timer.taskRefs)) }
+        .onAppear { chosen = Set(TaskRef.split(forReflection ? model.reflecting?.todoistTaskId : model.timer.taskRefs)) }
     }
 }

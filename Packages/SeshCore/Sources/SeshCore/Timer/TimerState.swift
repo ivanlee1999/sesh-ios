@@ -14,6 +14,12 @@ import Foundation
  costs nothing — the arithmetic is the same either way, which is what makes
  the timer work offline in the first place.
  */
+public struct TimerBaseline: Codable, Equatable, Sendable {
+    public var updatedAt: Millis
+    public var startedAt: Millis?
+    public init(updatedAt: Millis, startedAt: Millis?) { self.updatedAt = updatedAt; self.startedAt = startedAt }
+}
+
 public struct TimerState: Equatable, Sendable, Codable {
     public enum Phase: String, Codable, Sendable {
         case idle
@@ -33,6 +39,14 @@ public struct TimerState: Equatable, Sendable, Codable {
     /// Time already spent paused, excluding any pause currently open.
     public var pausedTotalMs: Int
     public var taskRefs: String?
+    /// Durable finish edits. A running break may carry the preceding focus draft.
+    public var reflection: Session?
+    /// Edits kept when returning to the same paused sitting, hidden until Finish.
+    public var retainedReflection: Session?
+    /// The server version actually displayed when this intent was made.
+    public var sharedBaseline: TimerBaseline?
+    /// Sitting visible before this control, including an offline local epoch.
+    public var controlSessionStart: Millis?
 
     public init(
         phase: Phase = .idle,
@@ -43,7 +57,11 @@ public struct TimerState: Equatable, Sendable, Codable {
         startedAt: Millis? = nil,
         pausedAt: Millis? = nil,
         pausedTotalMs: Int = 0,
-        taskRefs: String? = nil
+        taskRefs: String? = nil,
+        reflection: Session? = nil,
+        retainedReflection: Session? = nil,
+        sharedBaseline: TimerBaseline? = nil,
+        controlSessionStart: Millis? = nil
     ) {
         self.phase = phase
         self.kind = kind
@@ -54,6 +72,10 @@ public struct TimerState: Equatable, Sendable, Codable {
         self.pausedAt = pausedAt
         self.pausedTotalMs = pausedTotalMs
         self.taskRefs = taskRefs
+        self.reflection = reflection
+        self.retainedReflection = retainedReflection
+        self.sharedBaseline = sharedBaseline
+        self.controlSessionStart = controlSessionStart
     }
 
     public static let idle = TimerState()
@@ -82,6 +104,14 @@ public struct TimerState: Equatable, Sendable, Codable {
         return Date(timeIntervalSince1970: Double(now + Millis(remainingMs(now: now))) / 1000)
     }
 
+    /// Server receipt metadata is not a new Watch control epoch.
+    public func sameSessionState(as other: TimerState) -> Bool {
+        var left = self, right = other
+        left.sharedBaseline = nil; right.sharedBaseline = nil
+        left.controlSessionStart = nil; right.controlSessionStart = nil
+        return left == right
+    }
+
     public var isActive: Bool { phase == .running || phase == .paused }
 
     // ── Transitions ─────────────────────────────────────────────────────
@@ -103,18 +133,22 @@ public struct TimerState: Equatable, Sendable, Codable {
             startedAt: now,
             pausedAt: nil,
             pausedTotalMs: 0,
-            taskRefs: taskRefs
+            taskRefs: taskRefs,
+            sharedBaseline: sharedBaseline,
+            controlSessionStart: startedAt
         )
     }
 
     public mutating func pause(now: Millis) {
         guard phase == .running else { return }
+        controlSessionStart = startedAt
         phase = .paused
         pausedAt = now
     }
 
     public mutating func resume(now: Millis) {
         guard phase == .paused, let pausedAt else { return }
+        controlSessionStart = startedAt
         pausedTotalMs += Int(now - pausedAt)
         self.pausedAt = nil
         phase = .running
@@ -128,12 +162,14 @@ public struct TimerState: Equatable, Sendable, Codable {
      you started against. Losing the link is the honest outcome.
      */
     public mutating func changeTopic(_ topic: String) {
+        guard topic != intention else { return }
+        controlSessionStart = startedAt
         intention = topic
         taskRefs = nil
     }
 
     public mutating func abandon() {
-        self = .idle
+        self = TimerState(sharedBaseline: sharedBaseline, controlSessionStart: startedAt)
     }
 
     // ── Finishing ───────────────────────────────────────────────────────
@@ -156,7 +192,8 @@ public struct TimerState: Equatable, Sendable, Codable {
      */
     public func draftSession(now: Millis, manual: Bool) -> Session? {
         guard let startedAt, isActive else { return nil }
-        let span = Int(now - startedAt)
+        let boundary = pausedAt ?? now
+        let span = Int(boundary - startedAt)
         let actualMs = manual ? max(60_000, span) : max(targetMs, span)
         return Session(
             id: Session.id(startedAt: startedAt),
@@ -167,11 +204,41 @@ public struct TimerState: Equatable, Sendable, Codable {
             actualMs: actualMs,
             overflowMs: max(0, actualMs - targetMs),
             startedAt: startedAt,
-            endedAt: now,
+            endedAt: boundary,
             notes: "",
             rating: 0,
             todoistTaskId: taskRefs
         )
+    }
+
+    /// Freeze the finish boundary before the person spends time reflecting.
+    public mutating func beginReflection(now: Millis, manual: Bool, breakTargetMs: Int? = nil) {
+        guard isActive, reflection == nil else { return }
+        pause(now: now)
+        guard var draft = draftSession(now: now, manual: manual) else { return }
+        if let retainedReflection, retainedReflection.id == draft.id {
+            draft.notes = retainedReflection.notes
+            draft.rating = retainedReflection.rating
+        }
+        retainedReflection = nil
+        reflection = draft
+        phase = .reflect
+        if let breakTargetMs {
+            start(kind: .rest, intention: "", category: draft.category,
+                  targetMs: breakTargetMs, now: now)
+            reflection = draft
+        }
+    }
+
+    /// Return to the same paused sitting without creating history or task writes.
+    public mutating func returnFromReflection() {
+        guard phase == .reflect, let draft = reflection else { return }
+        intention = draft.intention
+        category = draft.category
+        taskRefs = draft.todoistTaskId
+        retainedReflection = draft
+        reflection = nil
+        phase = .paused
     }
 
     // ── Mirroring to the server ─────────────────────────────────────────
@@ -192,9 +259,8 @@ public struct TimerState: Equatable, Sendable, Codable {
     public func mirrorPayload(now: Millis, deviceId: String) -> [String: JSONValue] {
         let remaining = remainingMs(now: now)
         return [
-            // The poster is this app's own state; to every other device the
-            // timer has simply stopped.
-            "phase": .string(phase == .reflect ? "idle" : phase.rawValue),
+            // Reflection holds the timer paused on existing backends.
+            "phase": .string(phase == .reflect ? "paused" : phase.rawValue),
             "sessionType": .string(kind.rawValue),
             "intention": .string(intention),
             "category": .string(category),
@@ -205,6 +271,10 @@ public struct TimerState: Equatable, Sendable, Codable {
             "pausedAt": pausedAt.map { .number(Double($0)) } ?? .null,
             "todoistTaskId": taskRefs.map { .string($0) } ?? .null,
             "deviceId": .string(deviceId),
+            "recordedAt": .number(Double(now)),
+            "expectedUpdatedAt": .number(Double(sharedBaseline?.updatedAt ?? 0)),
+            "expectedStartedAt": sharedBaseline?.startedAt.map { .number(Double($0)) } ?? .null,
+            "actionSessionStart": controlSessionStart.map { .number(Double($0)) } ?? .null,
         ]
     }
 }

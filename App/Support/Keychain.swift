@@ -19,11 +19,13 @@ actor TokenStore: TokenProvider {
     private let account = "session"
     private var cached: String?
     private var expiry: Millis = 0
+    private var authDisabled = false
 
     init() {
         let existing = Self.read(service: service, account: account)
         cached = existing?.token
         expiry = existing?.expiresAt ?? 0
+        authDisabled = existing?.authDisabled ?? false
     }
 
     func currentToken() async -> String? { cached }
@@ -33,22 +35,25 @@ actor TokenStore: TokenProvider {
     func store(_ response: TokenResponse) async {
         cached = response.token
         expiry = response.expiresAt
-        Self.write(token: response.token, expiresAt: response.expiresAt, service: service, account: account)
+        authDisabled = response.authDisabled == true
+        Self.write(token: response.token, expiresAt: response.expiresAt, authDisabled: authDisabled, service: service, account: account)
     }
 
     func clear() async {
         cached = nil
         expiry = 0
+        authDisabled = false
         Self.delete(service: service, account: account)
     }
 
-    var isSignedIn: Bool { cached?.isEmpty == false }
+    var isSignedIn: Bool { authDisabled || cached?.isEmpty == false }
 
     // ── Keychain ────────────────────────────────────────────────────────
 
     private struct Stored: Codable {
         let token: String
         let expiresAt: Millis
+        let authDisabled: Bool?
     }
 
     private static func read(service: String, account: String) -> Stored? {
@@ -66,8 +71,8 @@ actor TokenStore: TokenProvider {
         return try? JSONDecoder().decode(Stored.self, from: data)
     }
 
-    private static func write(token: String, expiresAt: Millis, service: String, account: String) {
-        guard let data = try? JSONEncoder().encode(Stored(token: token, expiresAt: expiresAt)) else { return }
+    private static func write(token: String, expiresAt: Millis, authDisabled: Bool, service: String, account: String) {
+        guard let data = try? JSONEncoder().encode(Stored(token: token, expiresAt: expiresAt, authDisabled: authDisabled)) else { return }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

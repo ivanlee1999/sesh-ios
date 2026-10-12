@@ -68,21 +68,35 @@ showing a session its owner threw away last Tuesday. So deleting sets
 `deleted_at`, the tombstone travels like any other change, and the phone removes
 its copy when it sees one.
 
-## The timer is different
+## The shared timer
 
-It is the one piece of state this app does not treat as replicated. The phone
-runs its own timer from a start instant — nothing counts down, the remaining
-time is derived from the clock whenever anyone asks — which is why sleeping,
-being killed, or losing signal costs nothing at all.
+When signed in, the phone automatically displays the server's shared session.
+It retains the original start identifier and derives the same deadline from the
+server's remaining time and pause accounting. Merely receiving a snapshot
+never writes it back or creates history. The Watch receives this canonical
+phone state through WatchConnectivity; it does not authenticate to the server.
 
-It mirrors its position to the server so a laptop across the room can see it,
-coalesced so only the newest position is ever queued. A timer running on another
-device shows up as an offer on the Focus screen, never as something adopted:
-which session you are currently in is not a thing an app should decide for you.
+Foreground iPhone sync runs every five seconds and immediately on return. Web
+clients refresh every three seconds while visible. Watch launch requests a
+phone refresh. Background app refresh and WatchConnectivity delivery are
+best-effort; neither promises immediate updates while an app is suspended or
+force-quit. Standalone signed-out timers continue to work locally.
 
-Local notifications are scheduled up front — at the target, then every five
-minutes into overtime — so a session announces itself with no server, no push
-and no network involved.
+Controls persist their action ID, the displayed server version, original
+session identity and recording time. Causal predecessors let an offline queue
+replay safely; the server rejects stale actions instead of replacing newer
+work. Running payloads account for transit delay. Protocol 2 is negotiated with
+a read-only exchange before conditional writes, so older servers cannot ignore
+these conditions. Legacy build 3 remains supported on the new server.
+
+Conflicts adopt the current shared timer while preserving local copies in
+Settings → Saved local work. Explicit recovery can save a journal entry without
+changing the active timer, or export the complete saved state. Reflection edits
+and final Save update the canonical database atomically, preserving any newer
+session and retaining notes across failed persistence.
+
+Local notifications are replaced on transitions, with generation checks to
+withdraw late additions from an older running state after Pause or Stop.
 
 ## What is not replicated
 
@@ -107,3 +121,28 @@ impose its morning on a laptop.
 - **Category slugs are the join key.** Sessions are filed by slug, so a rename
   has to sweep them — on the server, and identically on the phone when the
   rename arrives.
+
+## Live Activities and Watch reflection
+
+The iPhone ActivityKit reconciler follows the persisted canonical sitting, not
+an earlier reflection copy. It recovers existing system activities on relaunch,
+ends obsolete/duplicate IDs, replaces immutable session identities, and submits
+updates in order with the latest desired state. Paused remaining time is fixed;
+running clocks use the canonical absolute target and continue into overtime.
+Repeated pulls with identical presentation do not spend Watch update budget.
+
+On iOS 18/watchOS 11 and later, Apple mirrors this activity into the Watch Smart
+Stack. A custom small layout supports reduced luminance, and a tap can open the
+native Watch companion. The native timer, widgets and complications remain the
+offline control surfaces. Local ActivityKit creation requires visible foreground
+execution; a background-adopted remote session retries on foreground. Existing
+activities can update/end during permitted background runtime. Mirroring is
+connection- and system-budget-dependent. Starting remotely while iPhone is
+terminated is not guaranteed: this release adds no APNs credentials or push
+infrastructure. Existing system Live Activity settings are respected.
+
+After Finish, Watch offers the same focus ratings as iPhone: Focused (5), So-so
+(3), Scattered (1); selecting again clears the rating. The selection is read
+from the persisted reflection, and field-specific edits merge under the Watch
+file lock so a rating tap preserves newer phone notes. Save retains the causal,
+idempotent completion flow.

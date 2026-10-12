@@ -6,7 +6,7 @@ import SeshCore
 
  A Bauhaus dial rather than a progress bar, and the only circle in the app: sixty
  ticks with the fives picked out, numerals outside the index, a wedge for what
- has elapsed, and two hands. Dragging anywhere on the face sets the length — the
+ has elapsed, and a clear countdown. Dragging anywhere on the face sets the length — the
  same `atan2` mapping the web app uses, so a gesture learned on one behaves the
  same on the other.
 
@@ -24,6 +24,7 @@ struct DialView: View {
     var onScrub: ((Int) -> Void)?
 
     @Environment(\.theme) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var scrubbing: Int?
     /// Flipped once on appearance to give the overtime badge something to
     /// animate between; a constant opacity has nothing to repeat.
@@ -44,16 +45,27 @@ struct DialView: View {
                 Canvas { context, size in
                     draw(in: &context, size: size)
                 }
+                // Decorative indices stay proportional to the face. The
+                // countdown below and its spoken value remain accessible.
+                .dynamicTypeSize(.medium)
                 .frame(width: side, height: side)
 
-                readout
+                readout(side: side)
                     .frame(width: side * 0.62)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .contentShape(Circle())
-            .gesture(scrubGesture(side: side))
+            .gesture(scrubGesture(side: side), including: onScrub == nil ? .none : .all)
         }
         .aspectRatio(1, contentMode: .fit)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Session timer")
+        .accessibilityValue(isOvertime ? "\(Format.overtime(remainingMs)), overtime" : "\(Format.clock(max(0, remainingMs))), \(sublabel)")
+        .accessibilityAdjustableAction { direction in
+            guard let onScrub else { return }
+            let delta = direction == .increment ? 1 : -1
+            onScrub(min(60, max(1, Format.minutes(totalMs) + delta)))
+        }
     }
 
     // ── The face ────────────────────────────────────────────────────────
@@ -65,19 +77,25 @@ struct DialView: View {
         let ink = theme.palette.text
         let faint = theme.palette.textTertiary
 
-        // The elapsed wedge, drawn first so everything else sits on top.
-        if elapsedFraction > 0 {
+        let fraction = isRunning || isPaused ? elapsedFraction : min(1, Double(scrubbing ?? Format.minutes(totalMs)) / 60)
+        context.fill(Path(ellipseIn: CGRect(x: centre.x - indexRadius, y: centre.y - indexRadius, width: indexRadius * 2, height: indexRadius * 2)),
+                     with: .color(theme.accent.opacity(0.06)))
+        if fraction > 0 {
             var wedge = Path()
             wedge.move(to: centre)
-            wedge.addArc(
-                center: centre,
-                radius: indexRadius,
-                startAngle: .degrees(-90),
-                endAngle: .degrees(-90 + 360 * elapsedFraction),
-                clockwise: false
-            )
+            wedge.addArc(center: centre, radius: indexRadius, startAngle: .degrees(-90),
+                         endAngle: .degrees(-90 + 360 * fraction), clockwise: false)
             wedge.closeSubpath()
-            context.fill(wedge, with: .color(theme.accent.opacity(isOvertime ? 0.32 : 0.18)))
+            context.fill(wedge, with: .radialGradient(Gradient(colors: [theme.accent.opacity(0.10), theme.accent.opacity(0.38)]),
+                                                     center: centre, startRadius: 0, endRadius: indexRadius))
+        }
+        let rim = Path(ellipseIn: CGRect(x: centre.x - indexRadius, y: centre.y - indexRadius, width: indexRadius * 2, height: indexRadius * 2))
+        context.stroke(rim, with: .color(theme.accent.opacity(0.14)), lineWidth: 8)
+        if fraction > 0 {
+            var arc = Path()
+            arc.addArc(center: centre, radius: indexRadius, startAngle: .degrees(-90),
+                       endAngle: .degrees(-90 + 360 * fraction), clockwise: false)
+            context.stroke(arc, with: .color(theme.accent), style: StrokeStyle(lineWidth: 8, lineCap: .round))
         }
 
         // Sixty ticks; every fifth one longer and darker.
@@ -107,45 +125,6 @@ struct DialView: View {
             context.draw(text, at: position, anchor: .center)
         }
 
-        // The rim arc: a thin line showing the same progress, at full radius.
-        if elapsedFraction > 0 {
-            var arc = Path()
-            arc.addArc(
-                center: centre,
-                radius: indexRadius,
-                startAngle: .degrees(-90),
-                endAngle: .degrees(-90 + 360 * elapsedFraction),
-                clockwise: false
-            )
-            context.stroke(arc, with: .color(theme.accent), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-        }
-
-        // The hands. The minute hand shows where the session is; the second hand
-        // sweeps only while it is actually running.
-        let plannedMinutes = Double(scrubbing ?? Format.minutes(totalMs))
-        let elapsedMinutes = Double(totalMs - remainingMs) / 60_000
-        let minuteAngle = Angle.degrees((isRunning || isPaused ? elapsedMinutes : plannedMinutes) * 6 - 90)
-
-        var minuteHand = Path()
-        minuteHand.move(to: point(centre, -radius * 0.06, minuteAngle))
-        minuteHand.addLine(to: point(centre, indexRadius * 0.92, minuteAngle))
-        context.stroke(minuteHand, with: .color(ink), style: StrokeStyle(lineWidth: 2.4, lineCap: .round))
-
-        if showSecondHand && isRunning {
-            let seconds = (Double(totalMs - remainingMs) / 1000).truncatingRemainder(dividingBy: 60)
-            let secondAngle = Angle.degrees(seconds * 6 - 90)
-            var secondHand = Path()
-            secondHand.move(to: point(centre, -radius * 0.10, secondAngle))
-            secondHand.addLine(to: point(centre, indexRadius * 0.98, secondAngle))
-            context.stroke(secondHand, with: .color(theme.accent), style: StrokeStyle(lineWidth: 1, lineCap: .round))
-        }
-
-        // The hub.
-        let hub = radius * 0.035
-        context.fill(
-            Path(ellipseIn: CGRect(x: centre.x - hub, y: centre.y - hub, width: hub * 2, height: hub * 2)),
-            with: .color(ink)
-        )
     }
 
     private func point(_ centre: CGPoint, _ radius: CGFloat, _ angle: Angle) -> CGPoint {
@@ -157,10 +136,12 @@ struct DialView: View {
 
     // ── The readout ─────────────────────────────────────────────────────
 
-    private var readout: some View {
+    private func readout(side: CGFloat) -> some View {
         VStack(spacing: 2) {
-            Text(Format.clock(max(0, remainingMs)))
-                .numeralStyle(44, weight: .semibold)
+            Text(Format.clock(scrubbing.map { $0 * 60_000 } ?? max(0, remainingMs)))
+                .numeralStyle(min(48, max(32, side * 0.18)), weight: .semibold)
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
                 .foregroundStyle(theme.palette.text)
 
             Text(sublabel)
@@ -173,9 +154,10 @@ struct DialView: View {
                     .foregroundStyle(theme.accent)
                     // Pulses, so overtime reads as something still happening
                     // rather than a number that has stopped.
-                    .opacity(pulsing ? 0.45 : 0.95)
-                    .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: pulsing)
-                    .onAppear { pulsing = true }
+                    .opacity(!reduceMotion && pulsing ? 0.45 : 0.95)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: pulsing)
+                    .onAppear { pulsing = !reduceMotion }
+                    .onChange(of: reduceMotion) { _, reduced in pulsing = !reduced }
             }
         }
         .multilineTextAlignment(.center)
@@ -224,6 +206,6 @@ struct DialView: View {
         var degrees = atan2(dx, -dy) * 180 / .pi
         if degrees < 0 { degrees += 360 }
         let minutes = Int((degrees / 6).rounded())
-        return min(60, max(1, minutes == 0 ? 60 : minutes))
+        return min(60, max(1, minutes))
     }
 }

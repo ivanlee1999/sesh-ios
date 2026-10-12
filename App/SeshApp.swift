@@ -25,7 +25,13 @@ struct SeshApp: App {
             fatalError("sesh could not open its database: \(error)")
         }
 
-        let server = URL(string: DeviceDefaults.serverURL) ?? URL(string: "https://sesh.liyifan.us")!
+        #if DEBUG
+        // Isolated simulator tests never need the production account or data.
+        let serverAddress = ProcessInfo.processInfo.environment["SESH_QA_SERVER_URL"] ?? DeviceDefaults.serverURL
+        #else
+        let serverAddress = DeviceDefaults.serverURL
+        #endif
+        let server = URL(string: serverAddress) ?? URL(string: "https://sesh.liyifan.us")!
         _model = State(initialValue: AppModel(database: database, serverURL: server))
     }
 
@@ -41,7 +47,9 @@ struct SeshApp: App {
             await model.syncNow()
         }
         .onChange(of: scenePhase) { _, phase in
+            model.setForeground(phase == .active)
             if phase == .background { scheduleRefresh() }
+            if phase == .active { model.refreshWatch() }
         }
     }
 

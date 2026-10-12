@@ -12,6 +12,8 @@ import SeshCore
 struct FocusView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.theme) private var theme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .body) private var actionHeight: CGFloat = 48
 
     @State private var intention: String = ""
     @State private var showingTaskPicker = false
@@ -61,32 +63,31 @@ struct FocusView: View {
     // ── Idle ────────────────────────────────────────────────────────────
 
     private var idleBody: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { _ in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    if let remote = model.remoteTimer, remote.belongsToAnotherDevice(deviceIdentity) {
-                        RemoteTimerBanner(remote: remote)
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            VStack(spacing: 0) {
+                adaptiveTimerContent(maximumDial: 280) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Eyebrow(text: "Session \(Format.ordinal(model.sessionNumberToday)) · \(Format.weekdayAndDate(context.date))")
+
+                        UnderlinedField(
+                            placeholder: "What are you working on?",
+                            text: $intention,
+                            size: 22,
+                            onCommit: { model.setIntention(intention) }
+                        )
+                        .accessibilityIdentifier("focus.intention")
+
+                        categoryChips
+
+                        SeshSegmented(
+                            options: [
+                                SegmentOption(BreakKind.focus, "Focus", "\(model.settings.focusDuration) min"),
+                                SegmentOption(BreakKind.short, "Short break", "\(model.settings.breakDuration) min"),
+                                SegmentOption(BreakKind.long, "Long break", "\(model.settings.longBreakDuration) min"),
+                            ],
+                            selection: $breakKind
+                        )
                     }
-
-                    Eyebrow(text: "Session \(Format.ordinal(model.sessionNumberToday)) · \(Format.weekdayAndDate(Date()))")
-
-                    UnderlinedField(
-                        placeholder: "What are you working on?",
-                        text: $intention,
-                        size: 22,
-                        onCommit: { model.setIntention(intention) }
-                    )
-
-                    categoryChips
-
-                    SeshSegmented(
-                        options: [
-                            SegmentOption(BreakKind.focus, "Focus", "\(model.settings.focusDuration) min"),
-                            SegmentOption(BreakKind.short, "Short break", "\(model.settings.breakDuration) min"),
-                            SegmentOption(BreakKind.long, "Long break", "\(model.settings.longBreakDuration) min"),
-                        ],
-                        selection: $breakKind
-                    )
 
                     DialView(
                         totalMs: plannedMs,
@@ -98,11 +99,12 @@ struct FocusView: View {
                             model.setPlannedMinutes(minutes, for: plannedKind, longBreak: breakKind == .long)
                         }
                     )
-                    .frame(maxHeight: 280)
-                    .frame(maxWidth: .infinity)
+                    .layoutValue(key: TimerDialLayoutKey.self, value: true)
 
                     LinkedTaskCard(refs: model.timer.taskRefs) { showingTaskPicker = true }
+                }
 
+                adaptiveActions {
                     VStack(spacing: 8) {
                         Button {
                             model.setIntention(intention)
@@ -110,17 +112,61 @@ struct FocusView: View {
                         } label: {
                             Text("Start \(plannedKind.isFocus ? "focus" : "break") · \(Format.minutes(plannedMs)) min")
                         }
-                        .seshButton(.primary)
+                        .buttonStyle(FocusActionStyle(role: .primary, minimumHeight: actionHeight))
+                        .accessibilityIdentifier("focus.start")
 
-                        Text("Ends \(Format.timeOfDay(Date().addingTimeInterval(Double(plannedMs) / 1000))) · drag the dial to change the length")
+                        Text("Ends \(Format.timeOfDay(context.date.addingTimeInterval(Double(plannedMs) / 1000))) · drag the dial to change the length")
                             .metaStyle()
                             .foregroundStyle(theme.palette.textTertiary)
                             .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity)
-                    }
                 }
-                .padding(20)
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
+                .padding(.bottom, 12)
+                .frame(maxWidth: 600)
+                .frame(maxWidth: .infinity)
+                }
             }
+        }
+    }
+
+    /// Geometry is the actual space left by the safe areas, tab bar and action
+    /// area, including a visible keyboard. The layout measures the content
+    /// before choosing a dial size; there is no device-height breakpoint.
+    private func adaptiveTimerContent<Content: View>(
+        maximumDial: CGFloat,
+        @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        GeometryReader { geometry in
+            ScrollView {
+                TimerContentLayout(
+                    viewportHeight: max(0, geometry.size.height - 24),
+                    minimumDial: dynamicTypeSize.isAccessibilitySize ? 260 : 164,
+                    maximumDial: dynamicTypeSize.isAccessibilitySize ? max(maximumDial, 340) : maximumDial
+                ) {
+                    content()
+                }
+                .frame(maxWidth: 560)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .frame(maxWidth: .infinity)
+            }
+            .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+            .scrollDismissesKeyboard(.interactively)
+        }
+        .frame(minHeight: 44)
+    }
+
+    /// Usually an intrinsic-height footer. If very large text and the keyboard
+    /// leave too little room, its controls gain their own scrolling escape.
+    /// The intention field keeps the same identity and keyboard focus.
+    private func adaptiveActions<Actions: View>(@ViewBuilder actions: @escaping () -> Actions) -> some View {
+        ViewThatFits(in: .vertical) {
+            actions().fixedSize(horizontal: false, vertical: true)
+            ScrollView { actions() }
+                .scrollBounceBehavior(.basedOnSize, axes: .vertical)
         }
     }
 
@@ -164,53 +210,76 @@ struct FocusView: View {
             let now = Millis(context.date.timeIntervalSince1970 * 1000)
             let remaining = model.timer.remainingMs(now: now)
 
-            VStack(spacing: 18) {
-                Spacer(minLength: 0)
+            VStack(spacing: 0) {
+                adaptiveTimerContent(maximumDial: 340) {
+                    VStack(spacing: 12) {
+                        HStack(spacing: 12) {
+                            Text(model.category(named: model.timer.category)?.label ?? model.timer.category)
+                                .eyebrowStyle().foregroundStyle(theme.accent)
+                            Spacer(minLength: 8)
+                            Eyebrow(text: eyebrow(remaining: remaining))
+                        }
 
-                Eyebrow(text: eyebrow(remaining: remaining))
+                        UnderlinedField(
+                            placeholder: "Untitled session",
+                            text: $intention,
+                            size: 20,
+                            onCommit: { model.setIntention(intention) }
+                        )
+                        .accessibilityIdentifier("focus.intention")
 
-                UnderlinedField(
-                    placeholder: "Untitled session",
-                    text: $intention,
-                    size: 20,
-                    onCommit: { model.setIntention(intention) }
-                )
-                .padding(.horizontal, 4)
+                        if let refs = model.timer.taskRefs, !refs.isEmpty {
+                            let linked = TaskRef.decodeList(refs).count
+                            Text("Logging to \(linked) task\(linked == 1 ? "" : "s")")
+                                .metaStyle()
+                                .foregroundStyle(theme.palette.textTertiary)
+                        }
 
-                if let refs = model.timer.taskRefs, !refs.isEmpty {
-                    let linked = TaskRef.decodeList(refs).count
-                    Text("Logging to \(linked) task\(linked == 1 ? "" : "s")")
-                        .metaStyle()
-                        .foregroundStyle(theme.palette.textTertiary)
-                }
-
-                DialView(
-                    totalMs: model.timer.targetMs,
-                    remainingMs: remaining,
-                    isRunning: model.timer.phase == .running,
-                    isPaused: model.timer.phase == .paused,
-                    showSecondHand: true,
-                    onScrub: nil
-                )
-                .frame(maxHeight: 320)
-
-                Spacer(minLength: 0)
-
-                HStack(spacing: 10) {
-                    Button(model.timer.phase == .paused ? "Resume" : "Pause") {
-                        model.timer.phase == .paused ? model.resume() : model.pause()
+                        if let status = model.sharedTimerStatus {
+                            Text(status)
+                                .metaStyle()
+                                .foregroundStyle(theme.palette.textSecondary)
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityIdentifier("focus.sharedStatus")
+                        }
                     }
-                    .seshButton(.tonal)
 
-                    Button("Finish") { model.finish(manual: true) }
-                        .seshButton(.ink)
+                    DialView(
+                        totalMs: model.timer.targetMs,
+                        remainingMs: remaining,
+                        isRunning: model.timer.phase == .running,
+                        isPaused: model.timer.phase == .paused,
+                        showSecondHand: true,
+                        onScrub: nil
+                    )
+                    .layoutValue(key: TimerDialLayoutKey.self, value: true)
                 }
 
-                Button("Abandon session") { showingAbandonConfirm = true }
-                    .seshButton(.quiet, size: 40)
-                    .padding(.bottom, 4)
+                adaptiveActions {
+                    VStack(spacing: 8) {
+                        HStack(spacing: 10) {
+                            Button(model.timer.phase == .paused ? "Resume" : "Pause") {
+                                model.timer.phase == .paused ? model.resume() : model.pause()
+                            }
+                            .buttonStyle(FocusActionStyle(role: .tonal, minimumHeight: actionHeight))
+                            .accessibilityIdentifier("focus.pauseResume")
+
+                            Button("Finish") { model.finish(manual: true) }
+                                .buttonStyle(FocusActionStyle(role: .ink, minimumHeight: actionHeight))
+                                .accessibilityIdentifier("focus.finish")
+                        }
+
+                        Button("Abandon session") { showingAbandonConfirm = true }
+                            .buttonStyle(FocusActionStyle(role: .quiet, minimumHeight: max(44, actionHeight * 0.92)))
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+                    .padding(.bottom, 12)
+                    .frame(maxWidth: 600)
+                    .frame(maxWidth: .infinity)
+                }
             }
-            .padding(20)
             .onChange(of: remaining <= 0) { wasOver, isOver in
                 // The chime belongs to the moment of crossing, not to every
                 // second after it — and a session restored already overdue
@@ -242,30 +311,114 @@ struct FocusView: View {
         Task { await Chime.shared.play(focus: model.timer.kind.isFocus, enabled: model.settings.soundEnabled) }
     }
 
-    private var deviceIdentity: String { model.deviceIdentity }
 }
 
-/// A session running elsewhere. Offered, never adopted on its own.
-private struct RemoteTimerBanner: View {
-    let remote: RemoteTimer
-    @Environment(AppModel.self) private var model
+/// Same visual language as SeshButtonStyle, but multiline accessibility labels
+/// may grow beyond the normal button height rather than being clipped.
+private struct FocusActionStyle: ButtonStyle {
+    let role: ButtonRole2
+    let minimumHeight: CGFloat
     @Environment(\.theme) private var theme
+    @Environment(\.isEnabled) private var isEnabled
 
-    var body: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Running on another device").rowTitleStyle()
-                Text("\(remote.intention.isEmpty ? "Focus" : remote.intention) · \(Format.clock(max(0, remote.remainingMs(now: Millis(Date().timeIntervalSince1970 * 1000)))))")
-                    .metaStyle()
-                    .foregroundStyle(theme.palette.textTertiary)
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(Typeface.font(15, .semibold))
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .frame(minHeight: minimumHeight)
+            .foregroundStyle(foreground)
+            .background(background, in: RoundedRectangle(cornerRadius: Radius.medium, style: .continuous))
+            .overlay {
+                if role == .quiet {
+                    RoundedRectangle(cornerRadius: Radius.medium, style: .continuous)
+                        .stroke(theme.palette.line, lineWidth: 1)
+                }
             }
-            Spacer(minLength: 8)
-            Button("Take over") { model.takeOverRemoteTimer() }
-                .seshButton(.tonal, size: 36)
-                .fixedSize()
+            .opacity(isEnabled ? 1 : 0.45)
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .animation(Motion.quick, value: configuration.isPressed)
+    }
+
+    private var foreground: Color {
+        switch role {
+        case .primary: return theme.accentInk
+        case .ink: return theme.palette.background
+        case .tonal, .quiet: return theme.palette.text
+        case .warn: return theme.palette.warn
         }
-        .padding(14)
-        .background(theme.palette.fill1, in: RoundedRectangle(cornerRadius: Radius.medium, style: .continuous))
+    }
+
+    private var background: Color {
+        switch role {
+        case .primary: return theme.accent
+        case .ink: return theme.palette.text
+        case .tonal: return theme.palette.fill2
+        case .quiet, .warn: return .clear
+        }
+    }
+}
+
+/// The dial is flexible; the surrounding controls keep their natural height.
+/// Any spare room is split around the dial, and overflow remains scrollable.
+private struct TimerDialLayoutKey: LayoutValueKey {
+    static let defaultValue = false
+}
+
+private struct TimerContentLayout: Layout {
+    let viewportHeight: CGFloat
+    let minimumDial: CGFloat
+    let maximumDial: CGFloat
+    private let spacing: CGFloat = 14
+
+    private struct Measurements {
+        let sizes: [CGSize]
+        let dialSide: CGFloat
+        let height: CGFloat
+        let spare: CGFloat
+    }
+
+    private func measure(width: CGFloat, subviews: Subviews) -> Measurements {
+        let sizes = subviews.map { view in
+            view[TimerDialLayoutKey.self] ? CGSize.zero : view.sizeThatFits(ProposedViewSize(width: width, height: nil))
+        }
+        let fixedHeight = sizes.reduce(0) { $0 + $1.height } + spacing * CGFloat(max(0, subviews.count - 1))
+        let dialSide = min(width, max(min(minimumDial, width), min(maximumDial, viewportHeight - fixedHeight)))
+        let intrinsicHeight = fixedHeight + dialSide
+        let height = max(viewportHeight, intrinsicHeight)
+        return Measurements(sizes: sizes, dialSide: dialSide, height: height, spare: height - intrinsicHeight)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? maximumDial
+        return CGSize(width: width, height: measure(width: width, subviews: subviews).height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let measured = measure(width: bounds.width, subviews: subviews)
+        var y = bounds.minY
+        for index in subviews.indices {
+            let view = subviews[index]
+            if view[TimerDialLayoutKey.self] {
+                y += measured.spare / 2
+                view.place(
+                    at: CGPoint(x: bounds.midX, y: y), anchor: .top,
+                    proposal: ProposedViewSize(width: measured.dialSide, height: measured.dialSide)
+                )
+                y += measured.dialSide + measured.spare / 2
+            } else {
+                let size = measured.sizes[index]
+                view.place(
+                    at: CGPoint(x: bounds.minX, y: y), anchor: .topLeading,
+                    proposal: ProposedViewSize(width: bounds.width, height: size.height)
+                )
+                y += size.height
+            }
+            y += spacing
+        }
     }
 }
 

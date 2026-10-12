@@ -15,7 +15,9 @@ import SeshCore
  They are already sitting in iOS's queue, and nothing — no signal, no server,
  the app killed outright — stops them arriving.
  */
+@MainActor
 enum TimerNotifications {
+    private static var generation = UUID()
     private static let prefix = "sesh.timer."
     /// Five-minute reminders for an hour. iOS keeps at most 64 pending
     /// notifications per app, and an hour of overtime is already well past the
@@ -45,7 +47,10 @@ enum TimerNotifications {
      */
     static func reschedule(for state: TimerState, settings: AppSettings, now: Millis) async {
         let center = UNUserNotificationCenter.current()
-        await cancelAll()
+        let token = UUID()
+        generation = token
+        await removePending(center, token: token)
+        guard generation == token else { return }
 
         guard state.phase == .running, let target = state.targetDate(now: now) else { return }
 
@@ -62,11 +67,12 @@ enum TimerNotifications {
             content.body = "\(label) · \(Format.minutes(state.targetMs)) min"
             content.sound = settings.soundEnabled ? .default : nil
             content.interruptionLevel = .timeSensitive
-            await add(center, id: "\(prefix)target", content: content, after: remaining)
+            await add(center, id: "\(prefix)\(token.uuidString).target", content: content, after: remaining, token: token)
         }
 
         // Then the reminders, because the timer runs on rather than stopping.
         for index in 1...overtimeReminders {
+            guard generation == token else { return }
             let delay = remaining + Double(index) * reminderInterval
             guard delay > 0 else { continue }
             let content = UNMutableNotificationContent()
@@ -74,13 +80,20 @@ enum TimerNotifications {
             content.body = "\(label) · +\(index * 5) min over"
             content.sound = nil
             content.interruptionLevel = .passive
-            await add(center, id: "\(prefix)over\(index)", content: content, after: delay)
+            await add(center, id: "\(prefix)\(token.uuidString).over\(index)", content: content, after: delay, token: token)
         }
     }
 
     static func cancelAll() async {
-        let center = UNUserNotificationCenter.current()
+        let token = UUID()
+        generation = token
+        await removePending(UNUserNotificationCenter.current(), token: token)
+    }
+
+    private static func removePending(_ center: UNUserNotificationCenter, token: UUID) async {
+        guard generation == token else { return }
         let pending = await center.pendingNotificationRequests()
+        guard generation == token else { return }
         let ours = pending.map(\.identifier).filter { $0.hasPrefix(prefix) }
         center.removePendingNotificationRequests(withIdentifiers: ours)
     }
@@ -89,9 +102,16 @@ enum TimerNotifications {
         _ center: UNUserNotificationCenter,
         id: String,
         content: UNMutableNotificationContent,
-        after seconds: TimeInterval
+        after seconds: TimeInterval,
+        token: UUID
     ) async {
+        guard generation == token else { return }
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(1, seconds), repeats: false)
         try? await center.add(UNNotificationRequest(identifier: id, content: content, trigger: trigger))
+        if generation != token {
+            // A slow add may finish after Pause removed earlier requests. Its
+            // unique generation ID can be withdrawn without touching new alarms.
+            center.removePendingNotificationRequests(withIdentifiers: [id])
+        }
     }
 }

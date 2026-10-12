@@ -14,7 +14,7 @@ import PackageDescription
  */
 let package = Package(
     name: "SeshCore",
-    platforms: [.iOS(.v17), .macOS(.v14)],
+    platforms: [.iOS(.v17), .macOS(.v14), .watchOS("11.0")],
     products: [
         .library(name: "SeshCore", targets: ["SeshCore"]),
     ],
