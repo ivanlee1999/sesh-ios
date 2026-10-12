@@ -29,9 +29,12 @@ final class WatchModel: NSObject, WCSessionDelegate {
     }
 
     func refresh() {
-        do { document = try WatchFileStore.read(); error = nil }
+        do {
+            let next = try WatchFileStore.read()
+            if next != document { WidgetCenter.shared.reloadAllTimelines() }
+            document = next; error = nil
+        }
         catch { self.error = "Could not open the saved timer. Try reopening Sesh." }
-        WidgetCenter.shared.reloadAllTimelines()
         scheduleAlert()
     }
 

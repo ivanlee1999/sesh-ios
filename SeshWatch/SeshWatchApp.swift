@@ -10,6 +10,9 @@ struct SeshWatchApp: App {
             WatchHomeView(model: model)
                 .task { model.activate() }
                 .onOpenURL { _ in model.refresh(); model.flush() }
+                .onReceive(NotificationCenter.default.publisher(for: .seshWatchTimerChanged)) { _ in
+                    model.refresh(); model.flush()
+                }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { model.refresh(); model.flush() }
