@@ -29,6 +29,11 @@ struct SeshActivityAttributes: ActivityAttributes {
         var isPaused: Bool { pausedRemaining != nil }
     }
 
+    static func clock(_ seconds: TimeInterval) -> String {
+        let total = Int(ceil(abs(seconds)))
+        return (seconds < 0 ? "+" : "") + String(format: "%d:%02d", total / 60, total % 60)
+    }
+
     /// Fixed for the life of the session.
     var sessionStart: Date
 }

@@ -121,7 +121,7 @@ final class AppModel {
     private let client: APIClient
     private let engine: SyncEngine
     private let store: DatabaseSyncStore
-    private let liveActivity = LiveActivityController()
+    private let liveActivity: LiveActivityController
     private let watchBridge = PhoneWatchBridge()
 
     private var deviceId: String = ""
@@ -130,12 +130,13 @@ final class AppModel {
     private var unpersistedTimer: TimerState?
     private var lastTaskRefresh: Date?
 
-    init(database: AppDatabase, serverURL: URL) {
+    init(database: AppDatabase, serverURL: URL, liveActivity: LiveActivityController? = nil) {
         let tokens = TokenStore()
         let repository = SeshRepository(database: database)
         let store = DatabaseSyncStore(database: database)
         let client = APIClient(baseURL: serverURL, tokens: tokens)
 
+        self.liveActivity = liveActivity ?? LiveActivityController()
         self.tokens = tokens
         self.repository = repository
         self.store = store
@@ -178,8 +179,6 @@ final class AppModel {
             Task {
                 if (try? repository.watchSnapshot().alertsOnWatch) == true { await TimerNotifications.cancelAll() }
                 else { await TimerNotifications.reschedule(for: current, settings: settings, now: nowMs()) }
-                if current.isActive { liveActivity.update(state: current, accentHex: accentHex, now: nowMs()) }
-                else { await liveActivity.end() }
             }
         }
         syncStatus.pending = (try? repository.pendingCount()) ?? 0
@@ -189,6 +188,13 @@ final class AppModel {
         }
         taskSources = loadTaskSources()
         watchBridge.publish()
+        refreshLiveActivity()
+    }
+
+    private func refreshLiveActivity() {
+        // Detached reflection edits never replace the canonical sitting here.
+        let canonical = (try? repository.loadTimer()) ?? timer
+        liveActivity.reconcile(state: canonical, accentHex: accentHex, now: nowMs())
     }
 
     private func loadTaskSources() -> [TaskSourceState] {
@@ -320,10 +326,10 @@ final class AppModel {
             Task {
                 if (try? repository.watchSnapshot().alertsOnWatch) == true { await TimerNotifications.cancelAll() }
                 else { await TimerNotifications.reschedule(for: timer, settings: settings, now: nowMs()) }
-                liveActivity.update(state: timer, accentHex: accentHex, now: nowMs())
             }
         }
         applyWakeLock()
+        refreshLiveActivity()
     }
 
     func start(kind: SessionKind, minutes: Int? = nil, longBreak: Bool = false) {
@@ -340,7 +346,6 @@ final class AppModel {
         guard commit(next) else { return }
         DeviceDefaults.markCategoryUsed(next.category)
         Haptics.medium()
-        liveActivity.start(state: next, accentHex: accentHex, now: nowMs())
     }
 
     func pause() {
@@ -361,7 +366,6 @@ final class AppModel {
         var next = timer
         next.abandon()
         guard commit(next) else { return }
-        Task { await liveActivity.end() }
         Haptics.light()
     }
 
@@ -446,9 +450,7 @@ final class AppModel {
             reload()
             sync()
             Task {
-                await liveActivity.end()
                 await TimerNotifications.reschedule(for: next, settings: settings, now: nowMs())
-                if next.isActive { liveActivity.start(state: next, accentHex: accentHex, now: nowMs()) }
                 await Chime.shared.play(focus: true, enabled: settings.soundEnabled)
             }
             Haptics.success()
@@ -551,6 +553,7 @@ final class AppModel {
             unpersistedTimer = nil
             reflectionError = nil
             applyWakeLock()
+            refreshLiveActivity()
             watchBridge.publish()
             sync()
         } catch {
@@ -578,6 +581,7 @@ final class AppModel {
     func setForeground(_ active: Bool) {
         syncTask?.cancel(); syncTask = nil
         guard active else { return }
+        refreshLiveActivity()
         syncTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -600,12 +604,10 @@ final class AppModel {
         timer = next
         controlError = nil
         applyWakeLock()
+        refreshLiveActivity()
         watchBridge.publish()
         Task {
             await TimerNotifications.reschedule(for: next, settings: settings, now: nowMs())
-            if next.isActive {
-                liveActivity.update(state: next, accentHex: accentHex, now: nowMs())
-            }
         }
         if mirror { sync() }
         watchBridge.publish()
@@ -625,8 +627,6 @@ final class AppModel {
         Task {
             if snapshot.alertsOnWatch { await TimerNotifications.cancelAll() }
             else { await TimerNotifications.reschedule(for: snapshot.timer, settings: settings, now: nowMs()) }
-            if snapshot.timer.isActive { liveActivity.update(state: snapshot.timer, accentHex: accentHex, now: nowMs()) }
-            else { await liveActivity.end() }
         }
     }
 

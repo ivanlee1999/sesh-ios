@@ -18,6 +18,14 @@ public struct WatchCommand: Codable, Equatable, Sendable, Identifiable {
     public var rating: Int
     public var manual: Bool
 
+    /// Field-specific edits merge with the current durable reflection while the
+    /// Watch file lock is held. Rating taps cannot replay stale phone notes.
+    public static func reflectionEdit(in timer: TimerState, at: Millis,
+                                      notes: String? = nil, rating: Int? = nil) -> WatchCommand {
+        .init(action: .editReflection, at: at, sessionStart: timer.reflection?.startedAt,
+              notes: notes ?? timer.reflection?.notes ?? "", rating: rating ?? timer.reflection?.rating ?? 0)
+    }
+
     public init(action: Action, at: Millis, sessionStart: Millis? = nil,
                 kind: SessionKind = .focus, minutes: Int = 25,
                 intention: String = "", category: String = "deep",

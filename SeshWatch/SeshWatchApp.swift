@@ -181,21 +181,21 @@ private struct NewSessionView: View {
 private struct ReflectionView: View {
     @Bindable var model: WatchModel
     let draft: Session
-    @State private var notes = ""
-    @State private var rating = 0
+    private var rating: Int { model.document.timer.reflection?.rating ?? draft.rating }
     var body: some View {
         VStack(spacing: 12) {
             Image(systemName: "checkmark.circle").font(.largeTitle).accessibilityHidden(true)
             Text("Time well spent").font(.headline)
             Text("\(draft.minutes) min · \(draft.intention.isEmpty ? "Focus" : draft.intention)")
                 .font(.caption).multilineTextAlignment(.center).privacySensitive()
-            TextField("Reflection (optional)", text: $notes)
-                .onChange(of: notes) { _, value in model.perform(.editReflection, notes: value, rating: rating) }
-            Picker("Rating", selection: $rating) {
-                Text("No rating").tag(0)
-                ForEach(1...5, id: \.self) { Text("\($0) of 5").tag($0) }
-            }.onChange(of: rating) { _, value in model.perform(.editReflection, notes: notes, rating: value) }
-            Button("Save session") { model.perform(.save) }.buttonStyle(.borderedProminent)
+            TextField("Reflection (optional)", text: Binding(
+                get: { model.document.timer.reflection?.notes ?? draft.notes },
+                set: { model.perform(.editReflection, notes: $0) }))
+            Text("How was your focus?").font(.headline)
+            focusRating("Focused", value: 5)
+            focusRating("So-so", value: 3)
+            focusRating("Scattered", value: 1)
+            Button("Save session") { model.perform(.save) }.buttonStyle(.borderedProminent).frame(minHeight: 44)
             if model.document.timer.isActive {
                 Text("Your break is \(model.document.timer.phase == .paused ? "paused" : "running").")
                     .font(.caption2).foregroundStyle(.secondary)
@@ -204,7 +204,24 @@ private struct ReflectionView: View {
                 }
             }
         }
-        .onAppear { notes = draft.notes; rating = draft.rating }
+    }
+
+    private func focusRating(_ label: String, value: Int) -> some View {
+        Button {
+            model.perform(.editReflection, rating: rating == value ? 0 : value)
+        } label: {
+            HStack {
+                Text(label)
+                Spacer(minLength: 4)
+                if rating == value { Image(systemName: "checkmark") }
+            }
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.bordered)
+        .accessibilityLabel("\(label), focus rating \(value) of 5")
+        .accessibilityAddTraits(rating == value ? .isSelected : [])
+        .accessibilityHint("Tap again to clear your rating")
     }
 }
 

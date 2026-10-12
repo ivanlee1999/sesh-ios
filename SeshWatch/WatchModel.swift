@@ -40,15 +40,18 @@ final class WatchModel: NSObject, WCSessionDelegate {
 
     func perform(_ action: WatchCommand.Action, minutes: Int = 25, intention: String = "",
                  category: String = "deep", kind: SessionKind = .focus,
-                 notes: String = "", rating: Int = 0) {
+                 notes: String? = nil, rating: Int? = nil) {
         do {
             try WatchFileStore.access { document in
                 let start = [.save, .editReflection].contains(action)
                     ? document.timer.reflection?.startedAt : document.timer.startedAt
                 let now = Int64(Date().timeIntervalSince1970 * 1000)
-                try document.perform(.init(action: action, at: now, sessionStart: start,
-                    kind: kind, minutes: minutes, intention: intention, category: category,
-                    notes: notes, rating: rating))
+                let command = action == .editReflection
+                    ? WatchCommand.reflectionEdit(in: document.timer, at: now, notes: notes, rating: rating)
+                    : WatchCommand(action: action, at: now, sessionStart: start,
+                        kind: kind, minutes: minutes, intention: intention, category: category,
+                        notes: notes ?? "", rating: rating ?? 0)
+                try document.perform(command)
             }
             refresh()
             WKInterfaceDevice.current().play(action == .finish || action == .save ? .success : .click)

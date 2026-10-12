@@ -36,6 +36,24 @@ final class WatchProtocolTests: XCTestCase {
         XCTAssertThrowsError(try WatchReducer.apply(command(.save, 73_000), timer: &timer, preferences: &preferences))
     }
 
+    func testFocusRatingPreservesNewPhoneNotesAndSurvivesOfflineRelaunchUntilSave() throws {
+        for rating in [1, 3, 5] {
+            var document = WatchDocument()
+            try document.perform(command(.start))
+            try document.perform(command(.finish, 70_000))
+            document.timer.reflection?.notes = "New notes from iPhone"
+            try document.perform(.reflectionEdit(in: document.timer, at: start + 71_000, rating: rating))
+            document = try JSONDecoder().decode(WatchDocument.self, from: JSONEncoder().encode(document))
+            XCTAssertEqual(document.timer.reflection?.notes, "New notes from iPhone")
+            XCTAssertEqual(document.timer.reflection?.rating, rating)
+            try document.perform(command(.save, 72_000))
+            XCTAssertEqual(document.savedLocally.first?.notes, "New notes from iPhone")
+            XCTAssertEqual(document.savedLocally.first?.rating, rating)
+            XCTAssertEqual(document.savedLocally.count, 1)
+            XCTAssertThrowsError(try document.perform(command(.save, 73_000)))
+        }
+    }
+
     func testTimerTargetIsOvertimeWithoutAutomaticCompletion() throws {
         var document = WatchDocument()
         try document.perform(command(.start))

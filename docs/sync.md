@@ -121,3 +121,28 @@ impose its morning on a laptop.
 - **Category slugs are the join key.** Sessions are filed by slug, so a rename
   has to sweep them — on the server, and identically on the phone when the
   rename arrives.
+
+## Live Activities and Watch reflection
+
+The iPhone ActivityKit reconciler follows the persisted canonical sitting, not
+an earlier reflection copy. It recovers existing system activities on relaunch,
+ends obsolete/duplicate IDs, replaces immutable session identities, and submits
+updates in order with the latest desired state. Paused remaining time is fixed;
+running clocks use the canonical absolute target and continue into overtime.
+Repeated pulls with identical presentation do not spend Watch update budget.
+
+On iOS 18/watchOS 11 and later, Apple mirrors this activity into the Watch Smart
+Stack. A custom small layout supports reduced luminance, and a tap can open the
+native Watch companion. The native timer, widgets and complications remain the
+offline control surfaces. Local ActivityKit creation requires visible foreground
+execution; a background-adopted remote session retries on foreground. Existing
+activities can update/end during permitted background runtime. Mirroring is
+connection- and system-budget-dependent. Starting remotely while iPhone is
+terminated is not guaranteed: this release adds no APNs credentials or push
+infrastructure. Existing system Live Activity settings are respected.
+
+After Finish, Watch offers the same focus ratings as iPhone: Focused (5), So-so
+(3), Scattered (1); selecting again clears the rating. The selection is read
+from the persisted reflection, and field-specific edits merge under the Watch
+file lock so a rating tap preserves newer phone notes. Save retains the causal,
+idempotent completion flow.
