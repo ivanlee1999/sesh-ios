@@ -31,6 +31,17 @@ final class AppModel {
     private(set) var timer: TimerState = .idle
     /// A session running on some other device, offered rather than adopted.
     private(set) var remoteTimer: RemoteTimer?
+    private(set) var timerConflict: TimerState?
+    private(set) var recoveredTimer: TimerState?
+    private(set) var recoveredTimers: [TimerState] = []
+
+    var sharedTimerStatus: String? {
+        guard authState == .signedIn else { return nil }
+        if timerConflict != nil { return "Another device changed the session" }
+        if syncStatus.pending > 0 { return "Waiting to sync" }
+        if syncStatus.lastError != nil { return "Offline · showing last synced session" }
+        return timer.isActive ? "Shared session" : nil
+    }
 
     var authState: AuthState = .unknown
 
@@ -54,6 +65,7 @@ final class AppModel {
     private(set) var savingReflection = false
     var selectedTab: Tab = .focus
     var banner: String?
+    private(set) var controlError: String?
 
     enum AuthState: Equatable {
         case unknown
@@ -115,6 +127,8 @@ final class AppModel {
     private var deviceId: String = ""
     private var syncTask: Task<Void, Never>?
     private var pendingSync: Task<Void, Never>?
+    private var unpersistedTimer: TimerState?
+    private var lastTaskRefresh: Date?
 
     init(database: AppDatabase, serverURL: URL) {
         let tokens = TokenStore()
@@ -143,6 +157,7 @@ final class AppModel {
         reload()
         restoreTimer()
         if authState == .signedIn { sync() }
+        setForeground(true)
     }
 
     /// Re-read everything the screens show. Cheap: it is a local database.
@@ -152,6 +167,21 @@ final class AppModel {
         settings = (try? repository.settings()) ?? .defaults
         tasks = (try? repository.cachedTasks()) ?? []
         remoteTimer = try? repository.remoteTimer()
+        timerConflict = try? repository.timerConflict()
+        recoveredTimer = try? repository.recoveredTimer()
+        recoveredTimers = (try? repository.recoveredTimers()) ?? []
+        let previous = timer
+        if unpersistedTimer == nil { timer = (try? repository.loadTimer()) ?? timer }
+        if previous != timer {
+            applyWakeLock()
+            let current = timer
+            Task {
+                if (try? repository.watchSnapshot().alertsOnWatch) == true { await TimerNotifications.cancelAll() }
+                else { await TimerNotifications.reschedule(for: current, settings: settings, now: nowMs()) }
+                if current.isActive { liveActivity.update(state: current, accentHex: accentHex, now: nowMs()) }
+                else { await liveActivity.end() }
+            }
+        }
         syncStatus.pending = (try? repository.pendingCount()) ?? 0
         if let state = try? repository.syncState() {
             syncStatus.lastSyncedAt = state.lastPullAt
@@ -212,7 +242,7 @@ final class AppModel {
 
     /// Ask for a sync. Coalesced: several calls in a row make one run.
     func sync(debounce: Duration = .seconds(2)) {
-        guard authState == .signedIn else { return }
+        guard authState != .signedOut else { return }
         pendingSync?.cancel()
         pendingSync = Task { [weak self] in
             try? await Task.sleep(for: debounce)
@@ -221,7 +251,8 @@ final class AppModel {
         }
     }
 
-    func syncNow() async {
+    func syncNow(refreshExternalTasks: Bool = true) async {
+        if authState == .unknown { authState = await tokens.isSignedIn ? .signedIn : .signedOut }
         guard authState == .signedIn, !syncStatus.isRunning else { return }
         syncStatus.isRunning = true
         defer { syncStatus.isRunning = false }
@@ -237,8 +268,12 @@ final class AppModel {
         syncStatus.lastError = outcome.lastError
         try? store.recordSyncError(outcome.lastError)
 
-        await refreshTasks()
         reload()
+        if refreshExternalTasks && (lastTaskRefresh.map { Date().timeIntervalSince($0) >= 60 } ?? true) {
+            lastTaskRefresh = Date()
+            await refreshTasks()
+            reload()
+        }
     }
 
     private func refreshTokenIfNeeded() async {
@@ -302,7 +337,7 @@ final class AppModel {
             taskRefs: kind.isFocus ? next.taskRefs : nil,
             now: nowMs()
         )
-        commit(next)
+        guard commit(next) else { return }
         DeviceDefaults.markCategoryUsed(next.category)
         Haptics.medium()
         liveActivity.start(state: next, accentHex: accentHex, now: nowMs())
@@ -325,7 +360,7 @@ final class AppModel {
     func abandon() {
         var next = timer
         next.abandon()
-        commit(next)
+        guard commit(next) else { return }
         Task { await liveActivity.end() }
         Haptics.light()
     }
@@ -405,6 +440,7 @@ final class AppModel {
             // Starting a break must not complete the draft: task credit uses the
             // final links chosen on the reflection screen, at Save time only.
             try repository.saveTimer(next, deviceId: deviceId)
+            unpersistedTimer = nil
             timer = next
             applyWakeLock()
             reload()
@@ -419,6 +455,7 @@ final class AppModel {
         } catch {
             // Keep the freeze and draft visible so a storage error cannot eat notes.
             timer = frozen
+            unpersistedTimer = frozen
             reflectionError = "Could not save on this phone. Your reflection is still here — try Save again."
         }
     }
@@ -443,11 +480,20 @@ final class AppModel {
         var next = timer
         next.reflection = draft
         timer = next
+        if unpersistedTimer != nil {
+            // Keep a failed draft detached: editing a character must not
+            // replace a newer shared sitting now persisted by sync.
+            unpersistedTimer = next
+            reflectionError = "This reflection is waiting to save. Tap Save to retry."
+            return
+        }
         do {
-            try repository.saveTimer(next, deviceId: deviceId, mirror: false)
+            _ = try repository.editReflection(draft)
+            unpersistedTimer = nil
             reflectionError = nil
-            watchBridge.publish()
+            reload()
         } catch {
+            unpersistedTimer = next
             reflectionError = "Could not keep this edit on disk. Your notes are still here — retry Save."
         }
     }
@@ -458,33 +504,51 @@ final class AppModel {
         guard let draft = reflecting, !savingReflection else { return false }
         savingReflection = true
         defer { savingReflection = false }
+        if unpersistedTimer != nil {
+            do {
+                // A failed disk write may outlive a newer Mac session. Save the
+                // retained journal work against the current canonical timer in
+                // one transaction, keeping that newer timer intact.
+                _ = try repository.saveDetachedReflection(draft, deviceId: deviceId)
+                unpersistedTimer = nil; reflectionError = nil
+                reload(); sync()
+                return true
+            } catch {
+                reflectionError = "Could not save on this phone. Your notes are still here — try again."
+                return false
+            }
+        }
         var next = timer
         next.reflection = nil
-        if next.phase == .reflect { next.abandon() }
+        if next.phase == .reflect || next.startedAt == draft.startedAt { next.abandon() }
         do {
             // If a draft edit could not persist, save it first; finalization still
             // checks the durable ID before committing history and clearing the timer.
-            try repository.saveTimer(timer, deviceId: deviceId, mirror: false)
             guard try repository.save(draft, replacingTimer: next, deviceId: deviceId, requiringReflection: true) else { return false }
-            timer = next
+            unpersistedTimer = nil
             reflectionError = nil
-            applyWakeLock()
             reload()
             sync()
             return true
         } catch {
+            unpersistedTimer = timer
             reflectionError = "Could not save on this phone. Your notes are still here — try again."
             return false
         }
     }
 
     func returnToPausedSession() {
+        guard unpersistedTimer == nil else {
+            reflectionError = "Save this reflection before returning to a session."
+            return
+        }
         guard timer.phase == .reflect else { return }
         var next = timer
         next.returnFromReflection()
         do {
             try repository.saveTimer(next, deviceId: deviceId)
             timer = next
+            unpersistedTimer = nil
             reflectionError = nil
             applyWakeLock()
             watchBridge.publish()
@@ -494,50 +558,47 @@ final class AppModel {
         }
     }
 
-    /// Adopt a timer that is running on another device, having been asked to.
-    func takeOverRemoteTimer() {
-        guard let remote = remoteTimer, remote.isRunning, remote.startedAt != nil else { return }
-
-        let now = nowMs()
-        let isPaused = remote.phase == "paused"
-
-        /*
-         The session is re-based onto this device's clock rather than adopted
-         exactly as the other device recorded it.
-
-         How long it has run comes from the server's own reckoning — its
-         remaining figure against its target — because the wall time since it
-         started includes any stretch the other device spent paused, and
-         counting that as focus would be a lie. `startedAt` becomes whatever
-         makes that much elapsed time true as of now.
-
-         The pause has to be re-based too, and that is the part easy to get
-         wrong: the server's `pausedAt` is an instant on *its* clock, so
-         carrying it over would have this device subtract the whole span since
-         then a second time, on top of the elapsed figure already accounting
-         for it. A pause adopted now begins now.
-         */
-        let elapsed = max(0, remote.targetMs - remote.remainingMs(now: now))
-
-        let next = TimerState(
-            phase: isPaused ? .paused : .running,
-            kind: SessionKind(rawValue: remote.sessionType),
-            intention: remote.intention,
-            category: remote.category,
-            targetMs: remote.targetMs,
-            startedAt: now - Millis(elapsed),
-            pausedAt: isPaused ? now : nil,
-            pausedTotalMs: 0,
-            taskRefs: remote.todoistTaskId
-        )
-
-        commit(next)
-        remoteTimer = nil
+    func saveRecoveredWork(_ local: TimerState) -> String? {
+        guard let draft = local.reflection else { return "This copy has no completed work to save. You can export it." }
+        do {
+            try repository.saveRecoveredSession(draft)
+            reload(); sync()
+            return nil
+        } catch { return "Could not save recovered work. Its copy remains on this phone." }
     }
 
-    private func commit(_ next: TimerState, mirror: Bool = true) {
+    /// Acknowledging a conflict keeps the canonical timer and the saved recovery.
+    func resolveTimerConflict() {
+        try? repository.resolveTimerConflict()
+        reload()
+    }
+
+    /// Foreground polling makes changes on an open Mac visible without interaction.
+    /// Background synchronization remains best-effort, scheduled by SeshApp.
+    func setForeground(_ active: Bool) {
+        syncTask?.cancel(); syncTask = nil
+        guard active else { return }
+        syncTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                await self.syncNow(refreshExternalTasks: false)
+                do { try await Task.sleep(for: .seconds(5)) }
+                catch { return }
+            }
+        }
+    }
+
+    @discardableResult
+    private func commit(_ requested: TimerState, mirror: Bool = true) -> Bool {
+        var next = requested
+        next.controlSessionStart = timer.startedAt
+        do { try repository.saveTimer(next, deviceId: deviceId, mirror: mirror) }
+        catch {
+            controlError = "Could not save that action. Your previous session is unchanged."
+            return false
+        }
         timer = next
-        try? repository.saveTimer(next, deviceId: deviceId, mirror: mirror)
+        controlError = nil
         applyWakeLock()
         watchBridge.publish()
         Task {
@@ -548,13 +609,16 @@ final class AppModel {
         }
         if mirror { sync() }
         watchBridge.publish()
+        return true
     }
 
     func refreshWatch() { watchBridge.publish() }
 
     func watchStateDidChange(_ snapshot: WatchSnapshot) {
-        timer = snapshot.timer
-        reflectionError = nil
+        if unpersistedTimer == nil {
+            timer = snapshot.timer
+            reflectionError = nil
+        }
         reload()
         applyWakeLock()
         sync()

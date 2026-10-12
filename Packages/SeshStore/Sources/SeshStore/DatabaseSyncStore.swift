@@ -58,13 +58,19 @@ public final class DatabaseSyncStore: SyncStore, @unchecked Sendable {
         try writer.write { db in
             let rows = try OutboxRecordRow
                 .filter(Column("nextAttemptAt") <= now)
-                .order(Column("createdAt"))
+                .order(Column("createdAt"), Column("rowid"))
                 .limit(limit)
                 .fetchAll(db)
 
             var ready: [OutboxRecord] = []
             for row in rows {
-                if let decoded = Self.decode(row) {
+                if let decoded = try Self.upgradeLegacyTimerOp(db, row: row) {
+                    // A delayed predecessor must not be bypassed by a later
+                    // action merely because its retry delay has not elapsed.
+                    if case .data(let op) = decoded.op,
+                       let predecessor = op.payload["afterTimerOpId"]?.stringValue,
+                       try OutboxRecordRow.fetchOne(db, key: predecessor) != nil,
+                       !ready.contains(where: { $0.opId == predecessor }) { continue }
                     ready.append(decoded)
                 } else {
                     /*
@@ -81,8 +87,19 @@ public final class DatabaseSyncStore: SyncStore, @unchecked Sendable {
     }
 
     public func removeOp(_ opId: String) throws {
-        _ = try writer.write { db in
-            try OutboxRecordRow.deleteOne(db, key: opId)
+        try writer.write { db in
+            if let row = try OutboxRecordRow.fetchOne(db, key: opId),
+               row.kind == SyncOpKind.timerMirror.rawValue || row.kind == SyncOpKind.sessionComplete.rawValue,
+               let item = Self.decode(row), case .data(let op) = item.op,
+               op.payload["journalOnly"] != .bool(true) {
+                let baseline = try Row.fetchOne(db, sql: "SELECT updatedAt, startedAt FROM timerOpBaseline WHERE opId = ?", arguments: [opId])
+                let updatedAt: Millis = baseline?["updatedAt"] ?? 0
+                let startedAt: Millis? = baseline?["startedAt"]
+                try db.execute(sql: "INSERT OR REPLACE INTO sharedTimerAck (id, opId, updatedAt, startedAt) VALUES (1, ?, ?, ?)",
+                               arguments: [opId, updatedAt, startedAt])
+                try db.execute(sql: "DELETE FROM timerOpBaseline WHERE opId = ?", arguments: [opId])
+            }
+            _ = try OutboxRecordRow.deleteOne(db, key: opId)
         }
     }
 
@@ -213,16 +230,99 @@ public final class DatabaseSyncStore: SyncStore, @unchecked Sendable {
         }
     }
 
-    public func setRemoteTimer(_ timer: RemoteTimer?) throws {
-        let payload = timer
-            .flatMap { try? JSONEncoder().encode($0) }
-            .flatMap { String(data: $0, encoding: .utf8) }
+    public func recordTimerConflict(_ opId: String) throws {
         try writer.write { db in
-            try db.execute(
-                sql: "UPDATE remoteTimerRow SET payload = ?, seenAt = ? WHERE id = 1",
-                arguments: [payload, clock()]
-            )
+            guard let failed = try OutboxRecordRow.fetchOne(db, key: opId),
+                  let row = try TimerRecord.fetchOne(db, key: 1) else { return }
+            var timer = try JSONDecoder().decode(TimerState.self, from: Data(row.state.utf8))
+            if timer.reflection == nil {
+                let completion = failed.kind == SyncOpKind.sessionComplete.rawValue ? failed :
+                    try OutboxRecordRow.fetchOne(db, sql: "SELECT * FROM outboxItem WHERE kind = 'session.complete' ORDER BY rowid DESC LIMIT 1")
+                if let completion, let item = Self.decode(completion), case .data(let op) = item.op,
+                   let sessionID = op.payload["id"]?.stringValue,
+                   let session = try SessionRecord.fetchOne(db, key: sessionID) {
+                    timer.reflection = session.session
+                }
+            }
+            // Repeated refusals in a causal chain keep one copy; a later
+            // unrelated conflict must never overwrite an older saved draft.
+            if let previous = try String.fetchOne(db, sql: "SELECT state FROM timerRecovery WHERE notice = 1 ORDER BY id DESC LIMIT 1") {
+                var prior = try JSONDecoder().decode(TimerState.self, from: Data(previous.utf8))
+                if timer.reflection == nil, timer.isActive { prior.reflection = nil }
+                if prior == timer { return }
+            }
+            if timer.isActive, timer.reflection == nil {
+                timer.reflection = timer.draftSession(now: clock(), manual: true)
+            }
+            let recovery = String(decoding: try JSONEncoder().encode(timer), as: UTF8.self)
+            try db.execute(sql: "INSERT OR IGNORE INTO timerRecovery (state, notice, opId, savedAt) VALUES (?, 1, ?, ?)",
+                           arguments: [recovery, opId, clock()])
         }
+    }
+
+    public func setRemoteTimer(_ timer: RemoteTimer?) throws {
+        let payload = try timer.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) }
+        try writer.write { db in
+            // Baseline is persisted even with unsent controls. Each queued
+            // operation already carries the version it actually acted against.
+            try db.execute(sql: "UPDATE remoteTimerRow SET payload = ?, seenAt = ? WHERE id = 1",
+                           arguments: [payload, clock()])
+            try db.execute(sql: "DELETE FROM sharedTimerAck")
+            let pending = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM outboxItem WHERE \(SeshRepository.timerMutationSQL)") ?? 0
+            guard pending == 0 else { return }
+            var adopted = timer?.localTimer() ?? .idle
+            let row = try TimerRecord.fetchOne(db, key: 1)
+            let local = try row.map { try JSONDecoder().decode(TimerState.self, from: Data($0.state.utf8)) } ?? .idle
+            // Intention, category and selected tasks on the ready screen are
+            // local preparation, not a shared session. An idle poll refreshes
+            // the server baseline without erasing what the person is typing.
+            if local.phase == .idle, adopted.phase == .idle {
+                let baseline = adopted.sharedBaseline
+                adopted = local
+                adopted.sharedBaseline = baseline
+            }
+            // Reflection belongs to history work, independent of who owns the
+            // next live sitting. Never discard notes when the shared timer moves.
+            adopted.reflection = local.reflection
+            if local.startedAt == adopted.startedAt, adopted.phase == .paused, local.phase == .reflect {
+                adopted.phase = .reflect
+            }
+            if local.startedAt == adopted.startedAt {
+                adopted.retainedReflection = local.retainedReflection
+            } else if adopted.reflection == nil {
+                adopted.reflection = local.retainedReflection
+            }
+            guard adopted != local else { return }
+            try TimerRecord(id: 1, state: String(decoding: try JSONEncoder().encode(adopted), as: UTF8.self),
+                            updatedAt: timer?.updatedAt ?? clock()).save(db)
+        }
+    }
+
+    /// Build 3 queued unguarded mirrors. Upgrade them conservatively, rather
+    /// than letting an old offline sitting silently replace a running Mac one.
+    private static func upgradeLegacyTimerOp(_ db: Database, row: OutboxRecordRow) throws -> OutboxRecord? {
+        guard let decoded = decode(row) else { return nil }
+        guard case .data(let op) = decoded.op,
+              op.kind == .timerMirror || op.kind == .sessionComplete,
+              op.payload["journalOnly"] != .bool(true),
+              op.payload["expectedUpdatedAt"] == nil, op.payload["afterTimerOpId"] == nil else { return decoded }
+        var payload = op.payload
+        if let predecessor = try String.fetchOne(db, sql: """
+            SELECT opId FROM outboxItem WHERE \(SeshRepository.timerMutationSQL)
+            AND rowid < (SELECT rowid FROM outboxItem WHERE opId = ?)
+            ORDER BY rowid DESC LIMIT 1
+            """, arguments: [row.opId]) {
+            payload["afterTimerOpId"] = .string(predecessor)
+        } else {
+            payload["expectedUpdatedAt"] = .number(0)
+            payload["expectedStartedAt"] = .null
+        }
+        if op.kind == .timerMirror { payload["recordedAt"] = .number(Double(row.createdAt)) }
+        try db.execute(sql: "INSERT OR IGNORE INTO timerOpBaseline (opId, updatedAt, startedAt) VALUES (?, 0, NULL)", arguments: [op.opId])
+        let guarded = SyncOp(opId: op.opId, kind: op.kind, payload: payload)
+        let text = String(decoding: try JSONEncoder().encode(guarded), as: UTF8.self)
+        try db.execute(sql: "UPDATE outboxItem SET payload = ?, coalesceKey = NULL WHERE opId = ?", arguments: [text, row.opId])
+        return OutboxRecord(opId: row.opId, op: .data(guarded), attempts: row.attempts, createdAt: row.createdAt)
     }
 
     // ── Encoding ────────────────────────────────────────────────────────

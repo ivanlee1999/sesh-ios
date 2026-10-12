@@ -14,6 +14,12 @@ import Foundation
  costs nothing — the arithmetic is the same either way, which is what makes
  the timer work offline in the first place.
  */
+public struct TimerBaseline: Codable, Equatable, Sendable {
+    public var updatedAt: Millis
+    public var startedAt: Millis?
+    public init(updatedAt: Millis, startedAt: Millis?) { self.updatedAt = updatedAt; self.startedAt = startedAt }
+}
+
 public struct TimerState: Equatable, Sendable, Codable {
     public enum Phase: String, Codable, Sendable {
         case idle
@@ -37,6 +43,10 @@ public struct TimerState: Equatable, Sendable, Codable {
     public var reflection: Session?
     /// Edits kept when returning to the same paused sitting, hidden until Finish.
     public var retainedReflection: Session?
+    /// The server version actually displayed when this intent was made.
+    public var sharedBaseline: TimerBaseline?
+    /// Sitting visible before this control, including an offline local epoch.
+    public var controlSessionStart: Millis?
 
     public init(
         phase: Phase = .idle,
@@ -49,7 +59,9 @@ public struct TimerState: Equatable, Sendable, Codable {
         pausedTotalMs: Int = 0,
         taskRefs: String? = nil,
         reflection: Session? = nil,
-        retainedReflection: Session? = nil
+        retainedReflection: Session? = nil,
+        sharedBaseline: TimerBaseline? = nil,
+        controlSessionStart: Millis? = nil
     ) {
         self.phase = phase
         self.kind = kind
@@ -62,6 +74,8 @@ public struct TimerState: Equatable, Sendable, Codable {
         self.taskRefs = taskRefs
         self.reflection = reflection
         self.retainedReflection = retainedReflection
+        self.sharedBaseline = sharedBaseline
+        self.controlSessionStart = controlSessionStart
     }
 
     public static let idle = TimerState()
@@ -90,6 +104,14 @@ public struct TimerState: Equatable, Sendable, Codable {
         return Date(timeIntervalSince1970: Double(now + Millis(remainingMs(now: now))) / 1000)
     }
 
+    /// Server receipt metadata is not a new Watch control epoch.
+    public func sameSessionState(as other: TimerState) -> Bool {
+        var left = self, right = other
+        left.sharedBaseline = nil; right.sharedBaseline = nil
+        left.controlSessionStart = nil; right.controlSessionStart = nil
+        return left == right
+    }
+
     public var isActive: Bool { phase == .running || phase == .paused }
 
     // ── Transitions ─────────────────────────────────────────────────────
@@ -111,18 +133,22 @@ public struct TimerState: Equatable, Sendable, Codable {
             startedAt: now,
             pausedAt: nil,
             pausedTotalMs: 0,
-            taskRefs: taskRefs
+            taskRefs: taskRefs,
+            sharedBaseline: sharedBaseline,
+            controlSessionStart: startedAt
         )
     }
 
     public mutating func pause(now: Millis) {
         guard phase == .running else { return }
+        controlSessionStart = startedAt
         phase = .paused
         pausedAt = now
     }
 
     public mutating func resume(now: Millis) {
         guard phase == .paused, let pausedAt else { return }
+        controlSessionStart = startedAt
         pausedTotalMs += Int(now - pausedAt)
         self.pausedAt = nil
         phase = .running
@@ -137,12 +163,13 @@ public struct TimerState: Equatable, Sendable, Codable {
      */
     public mutating func changeTopic(_ topic: String) {
         guard topic != intention else { return }
+        controlSessionStart = startedAt
         intention = topic
         taskRefs = nil
     }
 
     public mutating func abandon() {
-        self = .idle
+        self = TimerState(sharedBaseline: sharedBaseline, controlSessionStart: startedAt)
     }
 
     // ── Finishing ───────────────────────────────────────────────────────
@@ -244,6 +271,10 @@ public struct TimerState: Equatable, Sendable, Codable {
             "pausedAt": pausedAt.map { .number(Double($0)) } ?? .null,
             "todoistTaskId": taskRefs.map { .string($0) } ?? .null,
             "deviceId": .string(deviceId),
+            "recordedAt": .number(Double(now)),
+            "expectedUpdatedAt": .number(Double(sharedBaseline?.updatedAt ?? 0)),
+            "expectedStartedAt": sharedBaseline?.startedAt.map { .number(Double($0)) } ?? .null,
+            "actionSessionStart": controlSessionStart.map { .number(Double($0)) } ?? .null,
         ]
     }
 }

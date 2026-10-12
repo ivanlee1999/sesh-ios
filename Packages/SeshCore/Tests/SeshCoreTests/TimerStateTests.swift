@@ -112,7 +112,8 @@ final class TimerStateTests: XCTestCase {
     func testAbandonLeavesNothingBehind() {
         var timer = running()
         timer.abandon()
-        XCTAssertEqual(timer, .idle)
+        XCTAssertTrue(timer.sameSessionState(as: .idle))
+        XCTAssertEqual(timer.controlSessionStart, t0, "The conditional stop must identify the sitting it retired.")
         XCTAssertNil(timer.startedAt)
     }
 

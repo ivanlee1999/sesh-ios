@@ -202,6 +202,27 @@ public final class AppDatabase: Sendable {
             }
         }
 
+        migrator.registerMigration("sharedTimerRecovery") { db in
+            try db.create(table: "sharedTimerAck") { t in
+                t.primaryKey("id", .integer)
+                t.column("opId", .text).notNull()
+                t.column("updatedAt", .integer).notNull().defaults(to: 0)
+                t.column("startedAt", .integer)
+            }
+            try db.create(table: "timerOpBaseline") { t in
+                t.primaryKey("opId", .text)
+                t.column("updatedAt", .integer).notNull()
+                t.column("startedAt", .integer)
+            }
+            try db.create(table: "timerRecovery") { t in
+                t.primaryKey("id", .integer)
+                t.column("state", .text).notNull()
+                t.column("notice", .boolean).notNull().defaults(to: true)
+                t.column("opId", .text).notNull().unique()
+                t.column("savedAt", .integer).notNull()
+            }
+        }
+
         return migrator
     }
 }

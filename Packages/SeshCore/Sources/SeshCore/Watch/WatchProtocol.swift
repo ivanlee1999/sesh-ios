@@ -57,6 +57,7 @@ public struct WatchSnapshot: Codable, Equatable, Sendable {
     public var conflict: Bool
     public var recoveredIDs: [String] = []
     public var alertsOnWatch = false
+    public var syncMessage: String?
     public init(revision: Int64 = 0, timer: TimerState = .idle,
                 preferences: WatchPreferences = .init(), accepted: [String] = [], conflict: Bool = false) {
         self.revision = revision; self.timer = timer; self.preferences = preferences
@@ -129,8 +130,9 @@ public enum WatchReducer {
                 draft.rating = max(0, min(5, command.rating))
                 timer.reflection = draft
             } else {
+                timer.controlSessionStart = timer.startedAt
                 timer.reflection = nil
-                if timer.phase == .reflect { timer.abandon() }
+                if timer.phase == .reflect || timer.startedAt == draft.startedAt { timer.abandon() }
                 preferences.focusCount += 1
                 return draft
             }
@@ -193,7 +195,7 @@ public struct WatchDocument: Codable, Equatable, Sendable {
             conflict = nil
             return
         }
-        if acknowledgedPrefix && incoming.timer == acceptedTimer && !incoming.conflict {
+        if acknowledgedPrefix && incoming.timer.sameSessionState(as: acceptedTimer) && !incoming.conflict {
             snapshot = incoming
             return
         }

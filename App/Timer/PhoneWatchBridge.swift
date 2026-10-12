@@ -43,6 +43,7 @@ final class PhoneWatchBridge: NSObject, WCSessionDelegate {
                 snapshot = try model.repository.receiveWatch(batch, deviceId: model.deviceIdentity)
                 model.watchStateDidChange(snapshot)
             } else { snapshot = try model.repository.watchSnapshot() }
+            model.sync(debounce: .seconds(0))
             let data = try JSONEncoder().encode(snapshot)
             reply?(["snapshot": data])
             // Receipts must be queued, unlike applicationContext which can be replaced.

@@ -30,23 +30,63 @@ public final class SeshRepository: Sendable {
 
     // ── Queueing ────────────────────────────────────────────────────────
 
-    /**
-     Add an op to the outbox, inside whatever transaction is already open.
-
-     `coalesceKey` is for state where only the latest value is worth sending —
-     the mirrored timer, which changes on every pause and resume. Keeping a
-     queue of stale timer positions would waste the phone's battery telling the
-     server about a countdown it can work out for itself.
-     */
+    /// Timer writes keep their causal chain: removing an intermediate pause can
+    /// make a later resume overwrite a different sitting after reconnecting.
     func enqueue(_ db: Database, op: SyncOp, coalesceKey: String? = nil) throws {
-        if let coalesceKey {
+        if op.payload["journalOnly"] == .bool(true), try OutboxRecordRow.fetchOne(db, key: op.opId) != nil { return }
+        var queued = op
+        let timerMutation = op.kind == .timerMirror || (op.kind == .sessionComplete && op.payload["journalOnly"] != .bool(true))
+        if timerMutation {
+            var payload = op.payload
+            try Self.guardTimerPayload(db, payload: &payload, opId: op.opId)
+            if op.kind == .timerMirror, payload["recordedAt"] == nil { payload["recordedAt"] = .number(Double(now())) }
+            queued = SyncOp(opId: op.opId, kind: op.kind, payload: payload)
+        } else if let coalesceKey {
             try db.execute(sql: "DELETE FROM outboxItem WHERE coalesceKey = ?", arguments: [coalesceKey])
         }
-        let payload = String(data: try JSONEncoder().encode(op), encoding: .utf8) ?? "{}"
+        let payload = String(decoding: try JSONEncoder().encode(queued), as: UTF8.self)
         try OutboxRecordRow(
-            opId: op.opId, kind: op.kind.rawValue, payload: payload, coalesceKey: coalesceKey,
+            opId: op.opId, kind: op.kind.rawValue, payload: payload,
+            coalesceKey: timerMutation ? nil : coalesceKey,
             createdAt: now(), attempts: 0, nextAttemptAt: 0, lastError: nil
         ).insert(db)
+    }
+
+    static let timerMutationSQL = "kind IN ('timer.mirror', 'session.complete') AND CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload, '$.payload.journalOnly'), 0) ELSE 0 END = 0"
+
+    static func guardTimerPayload(_ db: Database, payload: inout [String: JSONValue], opId: String) throws {
+        let row = try TimerRecord.fetchOne(db, key: 1)
+        let local = try row.map { try JSONDecoder().decode(TimerState.self, from: Data($0.state.utf8)) }
+        let baseline = TimerBaseline(
+            updatedAt: payload["expectedUpdatedAt"]?.doubleValue.map { Millis($0) } ?? local?.sharedBaseline?.updatedAt ?? 0,
+            startedAt: payload["expectedUpdatedAt"] != nil ? payload["expectedStartedAt"]?.doubleValue.map { Millis($0) } : local?.sharedBaseline?.startedAt)
+        // Keep the displayed causal context outside the wire payload, even
+        // after a predecessor receipt supersedes its version guard.
+        try db.execute(sql: "INSERT INTO timerOpBaseline (opId, updatedAt, startedAt) VALUES (?, ?, ?)",
+                       arguments: [opId, baseline.updatedAt, baseline.startedAt])
+        let predecessor = try Row.fetchOne(db, sql: """
+            SELECT outboxItem.opId, timerOpBaseline.updatedAt, timerOpBaseline.startedAt
+            FROM outboxItem LEFT JOIN timerOpBaseline USING (opId)
+            WHERE \(Self.timerMutationSQL)
+            ORDER BY outboxItem.rowid DESC LIMIT 1
+            """) ?? Row.fetchOne(db, sql: "SELECT opId, updatedAt, startedAt FROM sharedTimerAck WHERE id = 1")
+        if let predecessor, let stamp: Millis = predecessor["updatedAt"],
+           stamp == baseline.updatedAt, (predecessor["startedAt"] as Millis?) == baseline.startedAt {
+            // Only actions from the same displayed context may extend this
+            // chain. A stale A action must never become authorized by B's pause.
+            payload["afterTimerOpId"] = .string(predecessor["opId"] as String)
+            payload.removeValue(forKey: "expectedUpdatedAt")
+            payload.removeValue(forKey: "expectedStartedAt")
+        } else {
+            payload.removeValue(forKey: "afterTimerOpId")
+            payload["expectedUpdatedAt"] = .number(Double(baseline.updatedAt))
+            payload["expectedStartedAt"] = baseline.startedAt.map { .number(Double($0)) } ?? .null
+        }
+    }
+
+    static func remoteTimer(_ db: Database) throws -> RemoteTimer? {
+        guard let row = try RemoteTimerRecord.fetchOne(db, key: 1), let payload = row.payload else { return nil }
+        return try JSONDecoder().decode(RemoteTimer.self, from: Data(payload.utf8))
     }
 
     func enqueue(_ db: Database, command: TaskCommand, opId: String = UUID().uuidString) throws {
@@ -98,21 +138,94 @@ public final class SeshRepository: Sendable {
     public func save(_ session: Session, replacingTimer state: TimerState,
                      deviceId: String, requiringReflection: Bool = false) throws -> Bool {
         let stamp = now()
-        let encoded = String(decoding: try JSONEncoder().encode(state), as: UTF8.self)
         return try writer.write { db in
-            if requiringReflection {
-                guard let row = try TimerRecord.fetchOne(db, key: 1),
-                      let data = row.state.data(using: .utf8),
-                      let persisted = try? JSONDecoder().decode(TimerState.self, from: data),
-                      persisted.reflection?.id == session.id else { return false }
+            let row = try TimerRecord.fetchOne(db, key: 1)
+            let current = try row.map { try JSONDecoder().decode(TimerState.self, from: Data($0.state.utf8)) }
+            if requiringReflection, current?.reflection?.id != session.id { return false }
+            let completesCurrent = current?.startedAt == session.startedAt
+            var next = current ?? state
+            if completesCurrent {
+                next.abandon()
+                // The preceding completion has retired the shared identity;
+                // the following mirror acts against its resulting idle state.
+                next.controlSessionStart = nil
             }
-            let existing = try SessionRecord.fetchOne(db, key: session.id)
+            if next.reflection?.id == session.id { next.reflection = nil }
+            if next.retainedReflection?.id == session.id { next.retainedReflection = nil }
+            var payload = Self.payload(for: session, updatedAt: stamp, full: true)
+            if !completesCurrent { payload["journalOnly"] = .bool(true) }
+            // An explicit Save can contain new notes even for history that
+            // already exists. Immutable recovery imports alone reuse an op ID.
+            let opId = UUID().uuidString
             try SessionRecord(session: session, updatedAt: stamp, dirty: true).save(db)
-            let kind: SyncOpKind = existing == nil ? .sessionComplete : .sessionUpsert
-            try enqueue(db, op: SyncOp(kind: kind, payload: Self.payload(for: session, updatedAt: stamp, full: kind == .sessionComplete)))
-            try TimerRecord(id: 1, state: encoded, updatedAt: stamp).save(db)
-            try enqueue(db, op: SyncOp(kind: .timerMirror, payload: state.mirrorPayload(now: stamp, deviceId: deviceId)), coalesceKey: "timer")
+            try enqueue(db, op: SyncOp(opId: opId, kind: .sessionComplete, payload: payload))
+            try TimerRecord(id: 1, state: String(decoding: try JSONEncoder().encode(next), as: UTF8.self), updatedAt: stamp).save(db)
+            if completesCurrent {
+                try enqueue(db, op: SyncOp(kind: .timerMirror, payload: next.mirrorPayload(now: stamp, deviceId: deviceId)))
+            }
             return true
+        }
+    }
+
+    public enum ReflectionEditError: Error { case missingDraft }
+
+    /// Reflection edits may race a shared snapshot. Replace just this draft,
+    /// never restore the cached timer's old session identity or wire baseline.
+    public func editReflection(_ draft: Session) throws -> TimerState {
+        try writer.write { db in
+            guard let row = try TimerRecord.fetchOne(db, key: 1) else { throw ReflectionEditError.missingDraft }
+            var current = try JSONDecoder().decode(TimerState.self, from: Data(row.state.utf8))
+            guard current.reflection?.id == draft.id else { throw ReflectionEditError.missingDraft }
+            current.reflection = draft
+            try TimerRecord(id: 1, state: String(decoding: try JSONEncoder().encode(current), as: UTF8.self), updatedAt: now()).save(db)
+            return current
+        }
+    }
+
+    /// Save an older failed reflection as history without restoring its timer
+    /// over the canonical shared sitting that arrived in the meantime.
+    public func saveDetachedReflection(_ session: Session, deviceId: String) throws -> TimerState {
+        let stamp = now()
+        return try writer.write { db in
+            let row = try TimerRecord.fetchOne(db, key: 1)
+            var current = try row.map { try JSONDecoder().decode(TimerState.self, from: Data($0.state.utf8)) } ?? .idle
+            let completesCurrent = current.startedAt == session.startedAt
+            let recoveryOpID = "journal-recovery-\(session.id)"
+            if try completesCurrent || OutboxRecordRow.fetchOne(db, key: recoveryOpID) == nil {
+                try SessionRecord(session: session, updatedAt: stamp, dirty: true).save(db)
+            }
+            // A previous refused Save may already exist locally but not on the
+            // server. Full completion can create it and remains idempotent by
+            // sitting identity. Journal-only recovery never controls B's timer.
+            var payload = Self.payload(for: session, updatedAt: stamp, full: true)
+            if !completesCurrent { payload["journalOnly"] = .bool(true) }
+            let opId = completesCurrent ? UUID().uuidString : "journal-recovery-\(session.id)"
+            try enqueue(db, op: SyncOp(opId: opId, kind: .sessionComplete, payload: payload))
+            if completesCurrent {
+                current.abandon()
+                current.controlSessionStart = nil
+            }
+            if current.reflection?.id == session.id { current.reflection = nil }
+            if current.retainedReflection?.id == session.id { current.retainedReflection = nil }
+            try TimerRecord(id: 1, state: String(decoding: try JSONEncoder().encode(current), as: UTF8.self), updatedAt: stamp).save(db)
+            if completesCurrent {
+                try enqueue(db, op: SyncOp(kind: .timerMirror, payload: current.mirrorPayload(now: stamp, deviceId: deviceId)))
+            }
+            return current
+        }
+    }
+
+    /// Explicitly recover recorded work into history without controlling the
+    /// current shared timer. Full completion can create a refused local Save.
+    public func saveRecoveredSession(_ session: Session) throws {
+        let stamp = now()
+        try writer.write { db in
+            let existing = try SessionRecord.fetchOne(db, key: session.id)
+            let recovered = existing?.session ?? session
+            if existing == nil { try SessionRecord(session: session, updatedAt: stamp, dirty: true).save(db) }
+            var payload = Self.payload(for: recovered, updatedAt: stamp, full: true)
+            payload["journalOnly"] = .bool(true)
+            try enqueue(db, op: SyncOp(opId: "journal-recovery-\(session.id)", kind: .sessionComplete, payload: payload))
         }
     }
 
@@ -201,7 +314,7 @@ public final class SeshRepository: Sendable {
 
      Written synchronously before the caller returns, so a phone killed by the
      system a second later comes back to exactly the session it was running. The
-     mirror is coalesced: only the newest position is ever worth sending.
+     mirror retains the causal sequence of every local control action.
      */
     public func saveTimer(_ state: TimerState, deviceId: String, mirror: Bool = true) throws {
         let stamp = now()
@@ -216,13 +329,36 @@ public final class SeshRepository: Sendable {
     }
 
     public func remoteTimer() throws -> RemoteTimer? {
+        try reader.read { db in try Self.remoteTimer(db) }
+    }
+
+    /// A rejected control never destroys the unsent local sitting or its notes.
+    /// Clearing the notice leaves the recovery draft available across relaunch.
+    public func timerConflict() throws -> TimerState? {
         try reader.read { db in
-            guard let row = try RemoteTimerRecord.fetchOne(db, key: 1),
-                  let payload = row.payload,
-                  let data = payload.data(using: .utf8)
-            else { return nil }
-            return try? JSONDecoder().decode(RemoteTimer.self, from: data)
+            guard let row = try Row.fetchOne(db, sql: "SELECT state FROM timerRecovery WHERE notice = 1 ORDER BY id DESC LIMIT 1") else { return nil }
+            let state: String = row["state"]
+            return try JSONDecoder().decode(TimerState.self, from: Data(state.utf8))
         }
+    }
+
+    public func recoveredTimer() throws -> TimerState? {
+        try reader.read { db in
+            guard let state = try String.fetchOne(db, sql: "SELECT state FROM timerRecovery ORDER BY id DESC LIMIT 1") else { return nil }
+            return try JSONDecoder().decode(TimerState.self, from: Data(state.utf8))
+        }
+    }
+
+    public func recoveredTimers() throws -> [TimerState] {
+        try reader.read { db in
+            try String.fetchAll(db, sql: "SELECT state FROM timerRecovery ORDER BY id DESC").map {
+                try JSONDecoder().decode(TimerState.self, from: Data($0.utf8))
+            }
+        }
+    }
+
+    public func resolveTimerConflict() throws {
+        try writer.write { db in try db.execute(sql: "UPDATE timerRecovery SET notice = 0") }
     }
 
     // ── Categories ──────────────────────────────────────────────────────

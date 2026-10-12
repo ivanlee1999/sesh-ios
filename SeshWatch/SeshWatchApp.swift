@@ -47,6 +47,9 @@ private struct WatchHomeView: View {
                         Text("Syncs when iPhone is available.")
                             .font(.caption2).foregroundStyle(.secondary)
                     }
+                    if model.document.pending.isEmpty, let message = model.document.snapshot.syncMessage {
+                        Text(message).font(.caption2).foregroundStyle(.secondary)
+                    }
                     if !model.document.recovered.isEmpty {
                         NavigationLink { RecoveryView(model: model) } label: {
                             Label("Recovered sessions", systemImage: "tray.full")

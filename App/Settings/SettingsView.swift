@@ -14,6 +14,7 @@ struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.theme) private var theme
 
+    @State private var showingSyncRecovery = false
     @State private var showingCategories = false
     @State private var showingThings = false
     @State private var showingGoogle = false
@@ -28,12 +29,16 @@ struct SettingsView: View {
             coloursSection
             sourcesSection
             syncSection
+            if !model.recoveredTimers.isEmpty {
+                Section("Saved local work") { Button("Review sync recovery") { showingSyncRecovery = true } }
+            }
             aboutSection
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(theme.palette.background)
         .navigationTitle("Settings")
+        .sheet(isPresented: $showingSyncRecovery) { SyncRecoveryView() }
         .sheet(isPresented: $showingCategories) { CategoriesSheet() }
         .sheet(isPresented: $showingThings) { ThingsSheet() }
         .sheet(isPresented: $showingGoogle) { GoogleConnectSheet() }

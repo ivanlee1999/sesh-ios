@@ -19,6 +19,7 @@ struct RootView: View {
 
     @State private var hasOnboarded = DeviceDefaults.hasOnboarded
     @State private var showingSignIn = false
+    @State private var showingSyncRecovery = false
 
     var body: some View {
         let theme = model.theme
@@ -40,6 +41,7 @@ struct RootView: View {
         .tint(theme.accent)
         .animation(Motion.standard, value: model.timer.isActive)
         .sheet(isPresented: $showingSignIn) { LoginView().environment(model) }
+        .sheet(isPresented: $showingSyncRecovery) { SyncRecoveryView() }
         .onChange(of: scenePhase) { _, phase in
             // Coming back is the moment most likely to have something to send,
             // and the moment the timer needs re-reading from the clock.
@@ -92,7 +94,13 @@ struct RootView: View {
     /// The only ambient status in the app, and only when there is something to say.
     @ViewBuilder
     private var statusBanner: some View {
-        if !model.timer.isActive && model.reflecting == nil {
+        if model.timerConflict != nil {
+            banner(text: "Shared session changed · local work saved", action: "Review", tone: .warn) {
+                showingSyncRecovery = true
+            }
+        } else if let message = model.controlError {
+            banner(text: message, action: nil, tone: .warn) {}
+        } else if !model.timer.isActive && model.reflecting == nil {
             // Only for a phone that was signed in and is not any more. Never
             // having signed in is not a problem to report; it is how the app
             // is meant to work, and a standing warning about it would be
@@ -135,5 +143,45 @@ struct RootView: View {
         .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
         .padding(.horizontal, 16)
         .transition(.move(edge: .top).combined(with: .opacity))
+    }
+}
+
+/// Recovery remains reachable from Settings after its notice is dismissed.
+struct SyncRecoveryView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var message: String?
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Shared session updated") {
+                    Text("Another device changed the session before your offline actions reached the server. The current shared timer is shown. These local copies remain saved on this phone.")
+                }
+                ForEach(Array(model.recoveredTimers.enumerated()), id: \.offset) { _, local in
+                    Section("Saved on this phone") {
+                        Text(local.reflection?.intention ?? local.intention)
+                        if let draft = local.reflection {
+                            Text("\(draft.minutes) minutes")
+                            if !draft.notes.isEmpty { Text(draft.notes).textSelection(.enabled) }
+                        }
+                        if local.reflection != nil {
+                            Button("Save recovered work to journal") {
+                                message = model.saveRecoveredWork(local) ?? "Saved to journal. The shared timer stays as it is."
+                            }
+                        }
+                        ShareLink(item: recoveryText(local)) { Label("Export saved session", systemImage: "square.and.arrow.up") }
+                    }
+                }
+                if let message { Text(message).font(.caption) }
+                Button("Keep shared session") { model.resolveTimerConflict(); dismiss() }
+            }
+            .navigationTitle("Saved local work")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
+        }
+    }
+    private func recoveryText(_ local: TimerState) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return (try? encoder.encode(local)).map { String(decoding: $0, as: UTF8.self) } ?? local.intention
     }
 }

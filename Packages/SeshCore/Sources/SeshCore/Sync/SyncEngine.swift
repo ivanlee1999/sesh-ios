@@ -99,6 +99,11 @@ public protocol SyncStore: AnyObject, Sendable {
     func remapCategory(from oldSlug: String, to newSlug: String) throws
     /// Remember what the server says the timer is doing, for the take-over banner.
     func setRemoteTimer(_ timer: RemoteTimer?) throws
+    func recordTimerConflict(_ opId: String) throws
+}
+
+public extension SyncStore {
+    func recordTimerConflict(_ opId: String) throws {}
 }
 
 // ── The engine ──────────────────────────────────────────────────────────
@@ -148,11 +153,28 @@ public actor SyncEngine {
         do {
             let deviceId = try store.deviceId()
 
+            var protocolVerified = false
             for _ in 0..<maxRounds {
                 let due = try store.dueOps(now: clock(), limit: opsPerRequest)
                 let dataOps = due.compactMap { record -> (String, SyncOp)? in
                     if case .data(let op) = record.op { return (record.opId, op) }
                     return nil
+                }
+
+                // Do not let an older server ignore conditional writes and replace
+                // an active session. Negotiate with a read-only exchange first.
+                if !protocolVerified && dataOps.contains(where: {
+                    $0.1.payload["expectedUpdatedAt"] != nil || $0.1.payload["afterTimerOpId"] != nil || $0.1.payload["journalOnly"]?.boolValue == true
+                }) {
+                    let probe = try await transport.sync(SyncRequest(deviceId: deviceId, cursor: try store.cursor()))
+                    try store.apply(probe.changes)
+                    try store.setCursor(probe.cursor)
+                    try store.setRemoteTimer(probe.timer)
+                    guard (probe.timerProtocolVersion ?? 0) >= 2 else {
+                        outcome.lastError = "Server update needed for shared timer controls. Your actions are saved on this device."
+                        return outcome
+                    }
+                    protocolVerified = true
                 }
 
                 let response = try await transport.sync(SyncRequest(
@@ -197,6 +219,7 @@ public actor SyncEngine {
         outcome: inout SyncOutcome
     ) throws {
         for result in results {
+            if result.timerConflict == true { try store.recordTimerConflict(result.opId) }
             switch OpDisposition.forResult(result) {
             case .drop:
                 try store.removeOp(result.opId)

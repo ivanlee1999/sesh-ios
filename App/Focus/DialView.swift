@@ -24,6 +24,7 @@ struct DialView: View {
     var onScrub: ((Int) -> Void)?
 
     @Environment(\.theme) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var scrubbing: Int?
     /// Flipped once on appearance to give the overtime badge something to
     /// animate between; a constant opacity has nothing to repeat.
@@ -44,19 +45,22 @@ struct DialView: View {
                 Canvas { context, size in
                     draw(in: &context, size: size)
                 }
+                // Decorative indices stay proportional to the face. The
+                // countdown below and its spoken value remain accessible.
+                .dynamicTypeSize(.medium)
                 .frame(width: side, height: side)
 
-                readout
+                readout(side: side)
                     .frame(width: side * 0.62)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .contentShape(Circle())
-            .gesture(scrubGesture(side: side))
+            .gesture(scrubGesture(side: side), including: onScrub == nil ? .none : .all)
         }
         .aspectRatio(1, contentMode: .fit)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Session timer")
-        .accessibilityValue("\(Format.clock(max(0, remainingMs))), \(sublabel)")
+        .accessibilityValue(isOvertime ? "\(Format.overtime(remainingMs)), overtime" : "\(Format.clock(max(0, remainingMs))), \(sublabel)")
         .accessibilityAdjustableAction { direction in
             guard let onScrub else { return }
             let delta = direction == .increment ? 1 : -1
@@ -132,10 +136,12 @@ struct DialView: View {
 
     // ── The readout ─────────────────────────────────────────────────────
 
-    private var readout: some View {
+    private func readout(side: CGFloat) -> some View {
         VStack(spacing: 2) {
             Text(Format.clock(scrubbing.map { $0 * 60_000 } ?? max(0, remainingMs)))
-                .numeralStyle(48, weight: .semibold)
+                .numeralStyle(min(48, max(32, side * 0.18)), weight: .semibold)
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
                 .foregroundStyle(theme.palette.text)
 
             Text(sublabel)
@@ -148,9 +154,10 @@ struct DialView: View {
                     .foregroundStyle(theme.accent)
                     // Pulses, so overtime reads as something still happening
                     // rather than a number that has stopped.
-                    .opacity(pulsing ? 0.45 : 0.95)
-                    .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: pulsing)
-                    .onAppear { pulsing = true }
+                    .opacity(!reduceMotion && pulsing ? 0.45 : 0.95)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: pulsing)
+                    .onAppear { pulsing = !reduceMotion }
+                    .onChange(of: reduceMotion) { _, reduced in pulsing = !reduced }
             }
         }
         .multilineTextAlignment(.center)

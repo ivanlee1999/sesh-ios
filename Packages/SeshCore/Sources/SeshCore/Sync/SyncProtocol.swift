@@ -138,7 +138,8 @@ public enum OpStatus: String, Sendable, Codable {
 }
 
 public struct OpResult: Equatable, Sendable, Codable {
-    public init(opId: String, status: OpStatus, error: String?, category: RemoteCategory?, sessionCount: Int?) {
+    public init(opId: String, status: OpStatus, error: String?, category: RemoteCategory?, sessionCount: Int?, timerConflict: Bool? = nil, timerUpdatedAt: Millis? = nil, timerStartedAt: Millis? = nil) {
+        self.timerConflict = timerConflict; self.timerUpdatedAt = timerUpdatedAt; self.timerStartedAt = timerStartedAt
         self.opId = opId; self.status = status; self.error = error
         self.category = category; self.sessionCount = sessionCount
     }
@@ -150,6 +151,9 @@ public struct OpResult: Equatable, Sendable, Codable {
     public let category: RemoteCategory?
     /// Why a category could not be deleted.
     public let sessionCount: Int?
+    public let timerConflict: Bool?
+    public let timerUpdatedAt: Millis?
+    public let timerStartedAt: Millis?
 }
 
 public struct RemoteSession: Equatable, Sendable, Codable {
@@ -320,15 +324,30 @@ public struct RemoteTimer: Equatable, Sendable, Codable {
 
     /// What the dial would read now, rebuilt from the server's own clock.
     public func remainingMs(now: Millis) -> Int {
-        remainingMs - Int(now - updatedAt)
+        phase == "running" ? remainingMs - Int(now - updatedAt) : remainingMs
+    }
+
+    /// Preserve the shared sitting identity and its absolute countdown deadline.
+    /// Receiving a snapshot never creates a new session or writes it back.
+    public func localTimer() -> TimerState {
+        let baseline = TimerBaseline(updatedAt: updatedAt, startedAt: startedAt)
+        guard isRunning, let startedAt else { return TimerState(sharedBaseline: baseline) }
+        let reference = phase == "paused" ? (pausedAt ?? updatedAt) : updatedAt
+        let elapsed = targetMs - remainingMs
+        let pausedTotal = max(0, Int(reference - startedAt) - elapsed)
+        return TimerState(phase: phase == "paused" ? .paused : .running,
+            kind: SessionKind(rawValue: sessionType), intention: intention, category: category,
+            targetMs: targetMs, startedAt: startedAt,
+            pausedAt: phase == "paused" ? reference : nil, pausedTotalMs: pausedTotal, taskRefs: todoistTaskId, sharedBaseline: baseline)
     }
 }
 
 public struct SyncResponse: Equatable, Sendable, Codable {
     public init(results: [OpResult], changes: SyncChanges, cursor: Int, hasMore: Bool,
-                timer: RemoteTimer?, serverTime: Millis) {
+                timer: RemoteTimer?, serverTime: Millis, timerProtocolVersion: Int? = nil) {
         self.results = results; self.changes = changes; self.cursor = cursor
         self.hasMore = hasMore; self.timer = timer; self.serverTime = serverTime
+        self.timerProtocolVersion = timerProtocolVersion
     }
 
     public let results: [OpResult]
@@ -337,6 +356,7 @@ public struct SyncResponse: Equatable, Sendable, Codable {
     public let hasMore: Bool
     public let timer: RemoteTimer?
     public let serverTime: Millis
+    public let timerProtocolVersion: Int?
 }
 
 // ── Auth ────────────────────────────────────────────────────────────────
